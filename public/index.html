@@ -1,0 +1,428 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="theme-color" content="#212121" />
+  <title>Local AI Chat</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>💬</text></svg>" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div id="app">
+    <div id="sidebar-backdrop" class="backdrop hidden"></div>
+
+    <!-- ───────── Sidebar ───────── -->
+    <aside id="sidebar">
+      <div class="brand-row">
+        <span id="app-spinner" class="app-spinner hidden" title="Generating…" aria-hidden="true"></span>
+        <span class="brand-name">Local AI Chat</span>
+      </div>
+      <div class="sidebar-head">
+        <button id="btn-new-chat" class="new-chat-btn" title="Start a new conversation">
+          <span class="nc-icon">+</span><span>New chat</span>
+        </button>
+      </div>
+      <div class="sidebar-search">
+        <input id="conv-search" type="search" placeholder="Search chats…" autocomplete="off" />
+      </div>
+      <nav id="conv-list" class="conv-list" aria-label="Conversations"></nav>
+      <div class="sidebar-foot">
+        <div id="server-status" class="status-pill" title="AI server status">
+          <span class="dot dot-grey"></span><span id="server-status-text">checking…</span>
+        </div>
+        <div class="foot-buttons">
+          <button id="btn-open-settings" class="side-link">⚙ Settings</button>
+          <button id="btn-open-prompts" class="side-link">🎭 Personas</button>
+          <button id="btn-open-mcp" class="side-link">🔌 MCP servers</button>
+        </div>
+      </div>
+    </aside>
+
+    <!-- ───────── Main ───────── -->
+    <main id="main">
+      <header id="chat-header">
+        <button id="btn-toggle-sidebar" class="icon-btn plain" title="Toggle sidebar">☰</button>
+        <div class="chat-title-wrap">
+          <input id="chat-title" class="chat-title" value="New chat" spellcheck="false" />
+          <div id="chat-sub" class="chat-sub"></div>
+        </div>
+        <select id="sel-model" class="model-select" title="Model for this conversation"></select>
+      </header>
+
+      <div id="messages" class="messages">
+        <div id="empty-state" class="empty-state">
+          <div class="empty-emoji">💬</div>
+          <h2>Local AI Chat</h2>
+          <p>Chats are stored in a local SQLite database.<br />Works with any OpenAI-compatible server.</p>
+          <div class="empty-actions">
+            <button class="btn btn-primary" id="empty-new">Start a chat</button>
+            <button class="btn" id="empty-settings">Set server URL</button>
+          </div>
+        </div>
+      </div>
+
+      <div id="approvals" class="approvals"></div>
+
+      <button type="button" id="scroll-latest" class="scroll-latest hidden" title="Scroll to latest">↓</button>
+
+      <div id="composer-wrap" class="composer-wrap">
+        <!-- Files picked but not sent yet -->
+        <div id="attachments" class="attachments hidden"></div>
+
+        <!-- Everything that used to sit above the message box lives in this menu -->
+        <div id="plus-menu" class="plus-menu hidden">
+          <div class="pm-section">
+            <div class="pm-row" title="Let the model call MCP tools">
+              <span class="pm-ico">🔌</span><label class="pm-label" for="chk-tools">MCP tools</label>
+              <input type="checkbox" id="chk-tools" class="switch" title="MCP tools on/off" checked />
+            </div>
+          </div>
+
+          <!-- Built-in MCP servers (files / shell), listed right after the MCP toggle -->
+          <div id="pm-mcp-builtin" class="pm-section pm-mcp-section">
+            <div class="pm-heading">Built-in MCP</div>
+            <div id="pm-mcp-builtin-list" class="pm-mcp-list"></div>
+          </div>
+
+          <!-- MCP servers added in Settings -->
+          <div id="pm-mcp-custom" class="pm-section pm-mcp-section">
+            <div class="pm-heading">My MCP servers</div>
+            <div id="pm-mcp-custom-list" class="pm-mcp-list"></div>
+          </div>
+
+          <div class="pm-section">
+            <button type="button" class="pm-item" id="btn-attach">
+              <span class="pm-ico">📎</span><span>Add photos &amp; files</span>
+            </button>
+            <input id="attach-input" type="file" multiple class="hidden" />
+            <button type="button" class="pm-item" id="btn-attach-url">
+              <span class="pm-ico">🔗</span><span>Attach image by URL</span>
+            </button>
+          </div>
+
+          <div id="chat-options" class="pm-section">
+            <div class="pm-row pm-workdir">
+              <span class="pm-ico">📁</span>
+              <input id="co-workdir" type="text" spellcheck="false" placeholder="working folder"
+                     title="Folder the file and shell tools work in for this chat" />
+              <button type="button" class="icon-btn plain sm" id="btn-pick-workdir" title="Browse the server for a folder">📂</button>
+            </div>
+            <button type="button" class="pm-item" id="btn-file-manager">
+              <span class="pm-ico">🗂</span><span>Files in this chat</span>
+            </button>
+
+            <div class="pm-row" title="Ask before the model may change anything">
+              <span class="pm-ico">🛡️</span><span class="pm-label">Approval</span>
+              <div class="seg" id="co-approval" role="group" aria-label="Approval mode">
+                <button type="button" data-value="ask">Ask me first</button>
+                <button type="button" data-value="auto">Allow all</button>
+              </div>
+            </div>
+            <div class="pm-row" title="Offer the built-in file tools in this chat">
+              <span class="pm-ico">📄</span><label class="pm-label" for="co-files-on">File tools</label>
+              <div class="seg" id="co-files-access" role="group" aria-label="File tools access" title="How much of the disk the file tools may touch">
+                <button type="button" data-value="restricted">Restricted</button>
+                <button type="button" data-value="full">Full</button>
+              </div>
+              <input type="checkbox" id="co-files-on" class="switch" title="File tools on/off" />
+            </div>
+            <div class="pm-row" title="Offer the built-in shell tools in this chat">
+              <span class="pm-ico">💻</span><label class="pm-label" for="co-shell-on">Shell tools</label>
+              <div class="seg" id="co-shell-access" role="group" aria-label="Shell tools access" title="Where shell commands may run">
+                <button type="button" data-value="restricted">Restricted</button>
+                <button type="button" data-value="full">Full</button>
+              </div>
+              <input type="checkbox" id="co-shell-on" class="switch" title="Shell tools on/off" />
+            </div>
+            <div class="pm-row">
+              <span class="pm-ico">🎭</span><span class="pm-label">Persona</span>
+              <select id="sel-prompt"></select>
+              <button type="button" class="icon-btn plain sm" id="btn-new-prompt" title="Create a new persona">＋</button>
+            </div>
+            <div class="pm-row" title="Reasoning effort for thinking models (Auto = let the server decide)">
+              <span class="pm-ico">🧠</span><span class="pm-label">Thinking</span>
+              <select id="sel-effort">
+                <option value="auto">auto</option>
+                <option value="minimal">minimal</option>
+                <option value="low">low</option>
+                <option value="medium">medium</option>
+                <option value="high">high</option>
+                <option value="xhigh">xhigh</option>
+                <option value="max">max</option>
+              </select>
+            </div>
+          </div>
+
+          <div id="image-url-row" class="pm-section hidden">
+            <div class="pm-row">
+              <input id="image-url-input" type="text" placeholder="Image URL (http/https or data:)" spellcheck="false" />
+              <button type="button" class="btn sm" id="btn-image-add">Attach</button>
+              <button type="button" class="btn sm ghost" id="btn-image-cancel">Cancel</button>
+            </div>
+          </div>
+        </div>
+
+        <form id="composer" class="composer">
+          <button type="button" id="btn-plus" class="icon-btn plus" title="Add files and chat options" aria-haspopup="true" aria-expanded="false">+</button>
+          <textarea id="input" rows="1" placeholder="Message…" autocomplete="off"></textarea>
+          <button type="submit" id="btn-send" class="send-btn" title="Send">↑</button>
+          <button type="button" id="btn-stop" class="send-btn stop hidden" title="Stop generating">■</button>
+        </form>
+        <div class="composer-hint">
+          <span id="hint-tools"></span>
+          <span id="hint-tokens"></span>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <!-- ───────── Settings modal ───────── -->
+  <dialog id="dlg-settings" class="modal">
+    <form method="dialog" id="settings-form">
+      <header class="modal-head">
+        <h2>Settings</h2>
+        <button type="button" class="btn btn-ghost icon-btn" data-close value="close">✕</button>
+      </header>
+      <div class="modal-body">
+        <section>
+          <h3>AI server (OpenAI compatible)</h3>
+          <label class="field">
+            <span>Base URL</span>
+            <input id="set-api_base_url" type="text" placeholder="http://localhost:1234/v1" spellcheck="false" />
+            <small>Any server exposing <code>/chat/completions</code>. The <code>/v1</code> suffix is added automatically if missing.</small>
+          </label>
+          <label class="field">
+            <span>API key</span>
+            <input id="set-api_key" type="password" placeholder="Leave blank for local servers" spellcheck="false" autocomplete="off" />
+            <small id="key-hint"></small>
+          </label>
+          <label class="field">
+            <span>Default model</span>
+            <div class="row">
+              <input id="set-model" type="text" placeholder="model id, e.g. llama-3.1-8b-instruct" spellcheck="false" list="model-list" />
+              <button type="button" id="btn-fetch-models" class="btn">Fetch models</button>
+            </div>
+            <datalist id="model-list"></datalist>
+            <small id="models-hint"></small>
+          </label>
+          <div class="row row-3">
+            <label class="field">
+              <span>Temperature</span>
+              <input id="set-temperature" type="number" step="0.1" min="0" max="2" placeholder="0.7" />
+            </label>
+            <label class="field">
+              <span>Max tokens</span>
+              <input id="set-max_tokens" type="number" min="1" placeholder="server default" />
+            </label>
+            <label class="field">
+              <span>Max tool rounds</span>
+              <input id="set-max_tool_rounds" type="number" min="1" placeholder="unlimited" />
+              <small>Blank means unlimited — the model may call tools until it answers.</small>
+            </label>
+          </div>
+          <div class="row row-2">
+            <label class="field">
+              <span>Thinking effort</span>
+              <select id="set-reasoning_effort">
+                <option value="auto">auto (server default)</option>
+                <option value="minimal">minimal</option>
+                <option value="low">low</option>
+                <option value="medium">medium</option>
+                <option value="high">high</option>
+                <option value="xhigh">xhigh</option>
+                <option value="max">max</option>
+              </select>
+              <small>For reasoning-capable models (OpenAI <code>reasoning_effort</code>). Per‑chat override in the <strong>+</strong> menu.</small>
+            </label>
+            <label class="field">
+              <span>Context window (tokens)</span>
+              <input id="set-context_window" type="number" min="512" placeholder="e.g. 8192" />
+              <small>Your model's token window — used for the context meter. Leave blank to hide the percentage.</small>
+            </label>
+            <label class="field">
+              <span>Recent context window (tokens)</span>
+              <input id="set-context_keep" type="number" min="512" placeholder="e.g. 8000" />
+              <small>Only the most recent turns up to this many tokens are sent verbatim each turn. Everything older is rolled into a rolling summary. Blank/0 disables trimming (sends full history).</small>
+            </label>
+            <label class="field">
+              <span>Hard cap (tokens, optional)</span>
+              <input id="set-context_compress_at" type="number" min="512" placeholder="e.g. 24000" />
+              <small>Optional. If set smaller than the window above, compress earlier. Usually leave blank — the window already trims every turn.</small>
+            </label>
+          </div>
+          <div class="row">
+            <button type="button" id="btn-test" class="btn">Test connection</button>
+            <button type="submit" class="btn btn-primary" id="btn-save-settings">Save settings</button>
+          </div>
+          <pre id="test-result" class="test-result hidden"></pre>
+        </section>
+
+        <section>
+          <h3>Built-in tools</h3>
+          <p class="muted">
+            The app ships two MCP servers of its own: <code>files</code> and <code>shell</code>.
+            Every chat has its own <strong>working folder</strong>, <strong>approval mode</strong> and
+            <strong>file / shell access</strong> — open the <strong>+</strong> menu next to the message box.
+            A new chat starts in your home folder with <em>Ask me first</em>, access restricted to that
+            folder, and both tool sets on. Switch a server off for <em>all</em> chats in
+            <em>MCP servers</em> below.
+          </p>
+          <label class="field">
+            <span>Shell command timeout (seconds)</span>
+            <input id="set-builtin_shell_timeout" type="number" min="1" max="3600" placeholder="120" />
+            <small>How long a foreground command may run before it is killed.</small>
+          </label>
+          <label class="field">
+            <span>Default working folder parent</span>
+            <input id="set-aitemp_root" type="text" placeholder="C:\Users\you\aitemp" />
+            <small>
+              Each new chat gets its own folder <code>{parent}\{chat id}</code> as its working folder.
+              Leave empty to use <code>{home}\aitemp</code>. Existing chats keep their current folder.
+            </small>
+          </label>
+          <div class="row">
+            <button type="button" class="btn" id="btn-clear-grants">Forget remembered approvals</button>
+          </div>
+          <pre id="policy-result" class="test-result hidden"></pre>
+        </section>
+
+        <section id="mcp-section">
+          <h3>MCP servers</h3>
+          <p class="muted">
+            Add as many <a href="https://modelcontextprotocol.io" target="_blank" rel="noreferrer">Model Context Protocol</a>
+            servers as you like. Each one is connected at the same time and its tools are namespaced as
+            <code>server__tool</code>, then offered to the model when <em>MCP tools</em> is on.
+          </p>
+          <div id="mcp-list" class="mcp-list"></div>
+
+          <div class="prompt-editor">
+            <h3 id="mcp-editor-title">Add MCP server</h3>
+            <div class="row row-2">
+              <label class="field"><span>Name</span><input id="m-name" type="text" placeholder="filesystem" /></label>
+              <label class="field"><span>Transport</span>
+                <select id="m-transport">
+                  <option value="stdio">stdio (local command)</option>
+                  <option value="http">HTTP (streamable)</option>
+                  <option value="sse">SSE (legacy)</option>
+                </select>
+              </label>
+            </div>
+            <div class="row row-2">
+              <label class="field"><span>Command</span><input id="m-command" type="text" placeholder="npx" spellcheck="false" /></label>
+              <label class="field"><span>URL</span><input id="m-url" type="text" placeholder="http://localhost:3001/mcp" spellcheck="false" /></label>
+            </div>
+            <label class="field"><span>Arguments (JSON array)</span><input id="m-args" type="text" placeholder='["-y","@modelcontextprotocol/server-filesystem","C:\\tmp"]' spellcheck="false" /></label>
+            <div class="row row-2">
+              <label class="field"><span>Environment (JSON object)</span><textarea id="m-env" rows="3" placeholder='{"API_KEY":"…"}' spellcheck="false"></textarea></label>
+              <label class="field"><span>Headers (JSON object)</span><textarea id="m-headers" rows="3" placeholder='{"Authorization":"******"}' spellcheck="false"></textarea></label>
+            </div>
+            <label class="field checkbox-field"><input id="m-enabled" type="checkbox" checked /> <span>Enabled (connect on save and at startup)</span></label>
+            <div class="row">
+              <button type="button" class="btn btn-primary" id="btn-save-mcp">Save &amp; connect</button>
+              <button type="button" class="btn" id="btn-reset-mcp">New / clear</button>
+              <button type="button" class="btn btn-danger hidden" id="btn-delete-mcp">Delete</button>
+            </div>
+            <small class="muted">
+              Saving here only affects this one server — it does not save the rest of your settings.
+              Add several servers one after another; each gets its own entry above.
+            </small>
+            <pre id="mcp-result" class="test-result hidden"></pre>
+          </div>
+        </section>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- ───────── Prompts modal ───────── -->
+  <dialog id="dlg-prompts" class="modal">
+    <form method="dialog" id="prompts-form">
+      <header class="modal-head">
+        <h2>System prompts (personas)</h2>
+        <button type="button" class="btn btn-ghost icon-btn" data-close value="close">✕</button>
+      </header>
+      <div class="modal-body">
+        <p class="muted">Each conversation uses one persona. The default persona is applied to new conversations.</p>
+        <div id="prompt-list" class="prompt-list"></div>
+        <div class="prompt-editor">
+          <h3 id="prompt-editor-title">New prompt</h3>
+          <label class="field"><span>Name</span><input id="p-name" type="text" placeholder="My assistant" /></label>
+          <label class="field"><span>Description</span><input id="p-desc" type="text" placeholder="short note (optional)" /></label>
+          <label class="field"><span>System prompt</span><textarea id="p-content" rows="7" placeholder="You are…"></textarea></label>
+          <label class="field checkbox-field"><input id="p-default" type="checkbox" /> <span>Make this the default persona</span></label>
+          <div class="row">
+            <button type="button" class="btn btn-primary" id="btn-save-prompt">Save prompt</button>
+            <button type="button" class="btn" id="btn-reset-prompt">New / clear</button>
+            <button type="button" class="btn btn-danger hidden" id="btn-delete-prompt">Delete</button>
+          </div>
+        </div>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- ───────── Working folder picker (browses the server's disk) ───────── -->
+  <dialog id="dlg-folder" class="modal">
+    <form method="dialog" id="folder-form">
+      <header class="modal-head">
+        <h2>Choose a working folder</h2>
+        <button type="button" class="btn btn-ghost icon-btn" data-close value="close">✕</button>
+      </header>
+      <div class="modal-body">
+        <p class="muted">
+          This is the folder on the <strong>machine running the app</strong>, not your browser.
+          The file and shell tools of this chat work inside it.
+        </p>
+        <div class="row">
+          <input id="folder-path" type="text" spellcheck="false" placeholder="C:\Users\you\project" class="grow" />
+          <button type="button" class="btn" id="btn-folder-go">Go</button>
+          <button type="button" class="btn" id="btn-folder-up" title="Parent folder">⬆</button>
+          <button type="button" class="btn" id="btn-folder-home" title="Home folder">🏠</button>
+        </div>
+        <div id="folder-drives" class="folder-drives"></div>
+        <div id="folder-list" class="file-list"></div>
+        <div class="row">
+          <input id="folder-new" type="text" placeholder="new subfolder name" class="grow" />
+          <button type="button" class="btn" id="btn-folder-create">Create folder</button>
+        </div>
+        <pre id="folder-error" class="test-result hidden"></pre>
+        <div class="row modal-actions">
+          <button type="button" class="btn" id="btn-folder-cancel">Cancel</button>
+          <button type="button" class="btn btn-primary" id="btn-folder-pick">Use this folder</button>
+        </div>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- ───────── File manager for this chat's working folder ───────── -->
+  <dialog id="dlg-files" class="modal">
+    <form method="dialog" id="files-form">
+      <header class="modal-head">
+        <h2>Files in this chat</h2>
+        <button type="button" class="btn btn-ghost icon-btn" data-close value="close">✕</button>
+      </header>
+      <div class="modal-body">
+        <div class="row">
+          <input id="files-path" type="text" readonly class="grow" spellcheck="false" />
+          <button type="button" class="btn" id="btn-files-up" title="Parent folder">⬆</button>
+          <button type="button" class="btn" id="btn-files-root" title="Chat working folder">🏠</button>
+          <button type="button" class="btn" id="btn-files-refresh" title="Reload">⟳</button>
+        </div>
+        <div class="row">
+          <input id="files-new" type="text" placeholder="new folder name" class="grow" />
+          <button type="button" class="btn" id="btn-files-mkdir">＋ Folder</button>
+          <button type="button" class="btn" id="btn-files-upload">⬆ Upload</button>
+          <input id="files-upload" type="file" class="hidden" />
+          <span class="muted" id="files-count"></span>
+        </div>
+        <div id="files-list" class="file-list"></div>
+        <pre id="files-error" class="test-result hidden"></pre>
+      </div>
+    </form>
+  </dialog>
+
+  <div id="toast" class="toast hidden"></div>
+
+  <script src="markdown.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
