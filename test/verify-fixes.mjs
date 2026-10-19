@@ -119,7 +119,7 @@ const workdir = path.join(tmp, 'work');
 fs.mkdirSync(workdir, { recursive: true });
 const app = spawn(process.execPath, [path.join(ROOT, 'server', 'index.js')], {
   cwd: ROOT,
-  env: { ...process.env, DB_PATH: dbPath, PORT: String(APP_PORT), HOST: '127.0.0.1' },
+  env: { ...process.env, DB_PATH: dbPath, PORT: String(APP_PORT), HOST: '127.0.0.1', AUTH_DISABLED: '1' },
   stdio: ['ignore', 'pipe', 'pipe']
 });
 app.stdout.resume();

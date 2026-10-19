@@ -140,7 +140,7 @@ fsRouter.post('/mkdir', (req, res) => {
 export const conversationFsRouter = Router({ mergeParams: true });
 
 function conversation(req, res) {
-  const conv = db.prepare('SELECT * FROM conversations WHERE id = ?').get(Number(req.params.id));
+  const conv = db.prepare('SELECT * FROM conversations WHERE id = ? AND user_id = ?').get(Number(req.params.id), req.user.id);
   if (!conv) {
     res.status(404).json({ error: 'conversation not found' });
     return null;

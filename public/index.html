@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
   <meta name="theme-color" content="#212121" />
-  <title>Local AI Chat</title>
+  <title>RiSriGPT</title>
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>💬</text></svg>" />
   <link rel="stylesheet" href="styles.css" />
 </head>
@@ -16,7 +16,20 @@
     <aside id="sidebar">
       <div class="brand-row">
         <span id="app-spinner" class="app-spinner hidden" title="Generating…" aria-hidden="true"></span>
-        <span class="brand-name">Local AI Chat</span>
+        <span class="brand-name">RiSriGPT</span>
+        <span class="brand-spacer"></span>
+        <div id="user-chip" class="user-chip hidden">
+          <button id="user-menu-btn" class="user-menu-btn" title="Account">
+            <span id="user-avatar" class="user-avatar">?</span>
+            <span id="user-name" class="user-name"></span>
+          </button>
+          <div id="user-menu" class="user-menu hidden">
+            <div class="user-menu-head"><span id="user-menu-name"></span><span id="user-menu-role" class="user-role"></span></div>
+            <button id="btn-change-password" class="user-menu-item">🔑 Change password</button>
+            <button id="btn-manage-users" class="user-menu-item hidden">👥 Manage users</button>
+            <button id="btn-logout" class="user-menu-item">⎋ Sign out</button>
+          </div>
+        </div>
       </div>
       <div class="sidebar-head">
         <button id="btn-new-chat" class="new-chat-btn" title="Start a new conversation">
@@ -53,7 +66,7 @@
       <div id="messages" class="messages">
         <div id="empty-state" class="empty-state">
           <div class="empty-emoji">💬</div>
-          <h2>Local AI Chat</h2>
+          <h2>RiSriGPT</h2>
           <p>Chats are stored in a local SQLite database.<br />Works with any OpenAI-compatible server.</p>
           <div class="empty-actions">
             <button class="btn btn-primary" id="empty-new">Start a chat</button>
@@ -171,6 +184,7 @@
         </form>
         <div class="composer-hint">
           <span id="hint-tools"></span>
+          <button type="button" id="btn-compact" class="ctx-compact-btn" title="Compact older context into a summary now">⤓ Compact</button>
           <span id="hint-tokens"></span>
         </div>
       </div>
@@ -416,6 +430,49 @@
         </div>
         <div id="files-list" class="file-list"></div>
         <pre id="files-error" class="test-result hidden"></pre>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- ───────── Login / setup overlay ───────── -->
+  <div id="login-overlay" class="login-overlay hidden">
+    <div class="login-card">
+      <div class="login-brand">💬 RiSriGPT</div>
+      <div id="login-title" class="login-title">Sign in</div>
+      <p id="login-sub" class="login-sub">Sign in to continue.</p>
+      <form id="login-form" class="login-form">
+        <label class="field"><span>Username</span><input id="login-username" type="text" autocomplete="username" required /></label>
+        <label class="field"><span>Password</span><input id="login-password" type="password" autocomplete="current-password" required /></label>
+        <div id="login-error" class="login-error hidden"></div>
+        <button type="submit" id="login-submit" class="btn btn-primary">Sign in</button>
+      </form>
+      <div class="login-switch"><span id="login-switch-text">No account?</span> <button id="login-toggle" class="link-btn" type="button">Create one</button></div>
+    </div>
+  </div>
+
+  <!-- ───────── Change password dialog ───────── -->
+  <dialog id="dlg-change-password" class="modal">
+    <form method="dialog" id="change-password-form">
+      <header class="modal-head"><h3>Change password</h3><button type="button" class="icon-btn plain" data-close>✕</button></header>
+      <label class="field"><span>Current password</span><input id="cp-current" type="password" autocomplete="current-password" required /></label>
+      <label class="field"><span>New password</span><input id="cp-next" type="password" autocomplete="new-password" required minlength="6" /></label>
+      <div class="row"><button type="submit" class="btn btn-primary">Update password</button></div>
+    </form>
+  </dialog>
+
+  <!-- ─────── Manage users dialog (admin) ─────── -->
+  <dialog id="dlg-users" class="modal">
+    <form method="dialog" id="users-form">
+      <header class="modal-head"><h3>Manage users</h3><button type="button" class="icon-btn plain" data-close>✕</button></header>
+      <div id="users-list" class="users-list"></div>
+      <div class="new-user-box">
+        <div class="nu-title">Create a user</div>
+        <div class="nu-row">
+          <input id="nu-username" type="text" placeholder="username" autocomplete="off" />
+          <input id="nu-password" type="password" placeholder="password" autocomplete="new-password" />
+          <label class="nu-admin"><input id="nu-admin" type="checkbox" /> admin</label>
+          <button type="button" id="nu-create" class="btn btn-primary">Add</button>
+        </div>
       </div>
     </form>
   </dialog>

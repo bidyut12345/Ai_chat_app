@@ -10,6 +10,8 @@ import { fsRouter, conversationFsRouter } from './routes/files.js';
 import chatRouter from './routes/chat.js';
 import mcpRouter from './routes/mcp.js';
 import approvalsRouter from './routes/approvals.js';
+import authRouter from './routes/auth.js';
+import { attachUser, requireAuth } from './services/auth.js';
 import { connectAll, stopAll } from './services/mcpManager.js';
 import { BUILTIN_SERVERS } from './services/builtin/index.js';
 import { denyAll } from './services/approvals.js';
@@ -37,6 +39,12 @@ app.use(express.json({ limit: '256mb' }));
 app.use(express.static(path.join(__dirname, '..', 'public')));
 
 app.get('/api/health', (req, res) => res.json({ ok: true, db: DB_PATH, uptime: process.uptime() }));
+// Auth: attachUser populates req.user from the cookie on every /api request;
+// authRouter (status/register/login) is public; everything after requireAuth.
+app.use('/api', attachUser);
+app.use('/api/auth', authRouter);
+// Everything below requires a valid session.
+app.use('/api', requireAuth);
 app.use('/api/settings', settingsRouter);
 app.use('/api/prompts', promptsRouter);
 app.use('/api/conversations', conversationsRouter);
@@ -59,7 +67,7 @@ app.use((err, req, res, next) => {
 });
 
 const server = app.listen(PORT, HOST, async () => {
-  console.log(`Local AI Chat  →  http://${HOST === '0.0.0.0' || HOST === '::' ? '127.0.0.1' : HOST}:${PORT}`);
+  console.log(`RiSriGPT  →  http://${HOST === '0.0.0.0' || HOST === '::' ? '127.0.0.1' : HOST}:${PORT}`);
   if (HOST === '0.0.0.0' || HOST === '::') {
     for (const a of lanAddresses()) console.log(`               →  http://${a}:${PORT}  (LAN)`);
   }

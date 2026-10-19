@@ -3,6 +3,7 @@ import { db } from '../db.js';
 import { sseInit } from '../sse.js';
 import { runtimeConfig } from '../services/openai.js';
 import { loadConversation } from '../services/chatService.js';
+import { compressNow } from '../services/context.js';
 import { startRun, subscribe, stopRun, cancelToolCall, activeRuns } from '../services/runManager.js';
 
 const router = Router();
@@ -41,7 +42,7 @@ router.post('/', async (req, res) => {
   const { conversation_id, content, image_url, regenerate = false, use_tools = true, extra_system } = req.body || {};
 
   const conversation = loadConversation(Number(conversation_id));
-  if (!conversation) {
+  if (!conversation || conversation.user_id !== req.user.id) {
     return res.status(404).json({ error: 'conversation not found' });
   }
 
@@ -89,6 +90,8 @@ router.post('/', async (req, res) => {
 router.get('/stream', (req, res) => {
   const id = Number(req.query.conversation_id);
   if (!Number.isFinite(id)) return res.status(400).end();
+  const owns = db.prepare('SELECT 1 FROM conversations WHERE id = ? AND user_id = ?').get(id, req.user.id);
+  if (!owns) return res.status(404).end();
   const lastEventId = Number(req.query.last_event_id) || 0;
   sseInit(res);
   if (!subscribe(id, lastEventId, res)) {
@@ -100,12 +103,17 @@ router.get('/stream', (req, res) => {
 
 /** GET /api/chat/running -> list of conversations with a generation in flight. */
 router.get('/running', (req, res) => {
-  res.json({ runs: activeRuns() });
+  const runs = activeRuns().filter((r) => db.prepare('SELECT 1 FROM conversations WHERE id = ? AND user_id = ?').get(r.conversation_id, req.user.id));
+  res.json({ runs });
 });
 
 /** POST /api/chat/stop { conversation_id } -> abort a running generation. */
 router.post('/stop', (req, res) => {
-  const stopped = stopRun(Number(req.body?.conversation_id));
+  const id = Number(req.body?.conversation_id);
+  if (!db.prepare('SELECT 1 FROM conversations WHERE id = ? AND user_id = ?').get(id, req.user.id)) {
+    return res.status(404).json({ error: 'conversation not found' });
+  }
+  const stopped = stopRun(id);
   res.json({ ok: true, stopped });
 });
 
@@ -115,8 +123,40 @@ router.post('/stop', (req, res) => {
  * the user cancelled this call and must not retry it.
  */
 router.post('/stop-tool', (req, res) => {
-  const cancelled = cancelToolCall(Number(req.body?.conversation_id), req.body?.call_id);
+  const id = Number(req.body?.conversation_id);
+  if (!db.prepare('SELECT 1 FROM conversations WHERE id = ? AND user_id = ?').get(id, req.user.id)) {
+    return res.status(404).json({ error: 'conversation not found' });
+  }
+  const cancelled = cancelToolCall(id, req.body?.call_id);
   res.json({ ok: true, cancelled });
+});
+
+/**
+ * POST /api/chat/compact { conversation_id }
+ * Manually roll older turns into the summary right now, without waiting for the
+ * auto-compress threshold. Refuses while a generation is running for this chat
+ * (compacting mid-turn would change the context the model is answering against).
+ */
+router.post('/compact', async (req, res) => {
+  const id = Number(req.body?.conversation_id);
+  const conversation = loadConversation(id);
+  if (!conversation || conversation.user_id !== req.user.id) {
+    return res.status(404).json({ error: 'conversation not found' });
+  }
+  if (activeRuns().some((r) => r.conversation_id === id)) {
+    return res.status(409).json({ error: 'Stop the current generation before compacting.' });
+  }
+  const cfg = turnConfig(conversation, {});
+  if (!cfg.model) return res.status(400).json({ error: 'No model selected. Set a model in Settings first.' });
+  const result = await compressNow(conversation, cfg);
+  if (result.error) return res.status(502).json({ error: result.error });
+  res.json({
+    ok: true,
+    compressed: !!result.compressed,
+    skipped: result.skipped || null,
+    before_tokens: result.tokensBefore || 0,
+    after_tokens: result.tokensAfter || 0
+  });
 });
 
 function autoTitle(conversation, text) {

@@ -71,7 +71,7 @@ async function* sseEvents(body) {
 async function main() {
   start('mock', ['test/mock-openai-server.js'], { MOCK_PORT: String(MOCK_PORT) });
   start('app', ['server/index.js'], {
-    PORT: String(APP_PORT), DB_PATH: dbPath,
+    PORT: String(APP_PORT), DB_PATH: dbPath, AUTH_DISABLED: '1',
     OPENAI_BASE_URL: `http://127.0.0.1:${MOCK_PORT}/v1`, OPENAI_MODEL: 'mock-gpt'
   });
   const up = await waitFor(async () => (await fetch(`${BASE}/api/health`)).ok);

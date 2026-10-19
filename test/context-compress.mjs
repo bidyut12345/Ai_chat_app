@@ -122,6 +122,67 @@ async function main() {
   }
   check('no orphaned tool results in built messages', orphan == null, `orphan=${orphan}`);
 
+  console.log('\n== trimMessagesInPlace (in-turn tool loop) ==');
+  {
+    // Simulate a long tool turn: many assistant tool-call + result pairs.
+    const big = 'x'.repeat(8000);
+    const msgs = [{ role: 'system', content: 'sys' }];
+    for (let i = 0; i < 30; i++) {
+      const id = `c${i}`;
+      msgs.push({ role: 'assistant', content: '', tool_calls: [{ id, type: 'function', function: { name: 't', arguments: '{}' } }] });
+      msgs.push({ role: 'tool', tool_call_id: id, content: big });
+    }
+    const before = ctx.estimateTokens(msgs);
+    const changed = ctx.trimMessagesInPlace(msgs, 4000);
+    const after = ctx.estimateTokens(msgs);
+    check('trim changes an over-budget array', changed === true);
+    check('trim shrinks the estimate', after < before, `before=${before} after=${after}`);
+    check('trim brings it near budget', after <= 4000 + 2000, `after=${after}`);
+    // Call/result pairing must remain intact (no messages removed).
+    const callIds = new Set();
+    let orphan = null;
+    for (const m of msgs) {
+      if (m.role === 'assistant' && m.tool_calls) for (const tc of m.tool_calls) callIds.add(tc.id);
+      if (m.role === 'tool' && !callIds.has(m.tool_call_id)) orphan = m.tool_call_id;
+    }
+    check('trim preserves every tool_call/result pairing', orphan == null, `orphan=${orphan}`);
+    // Recent results (within budget) should be untouched; oldest elided.
+    const lastTool = [...msgs].reverse().find((m) => m.role === 'tool');
+    const firstTool = msgs.find((m) => m.role === 'tool');
+    check('recent tool result kept verbatim', lastTool.content === big);
+    check('oldest tool result elided', firstTool.content.length < big.length);
+    // Under-budget arrays are left alone.
+    const small = [{ role: 'user', content: 'hi' }];
+    check('under-budget array untouched', ctx.trimMessagesInPlace(small, 4000) === false && small[0].content === 'hi');
+    // Window 0 disables trimming.
+    check('window 0 disables trim', ctx.trimMessagesInPlace(msgs, 0) === false);
+  }
+
+  console.log('\n== compressNow (manual button) ==');
+  {
+    // Fresh, SMALL conversation (well under any auto threshold). compressNow
+    // must still roll older turns into a summary when asked manually.
+    const cid = Number(db.prepare("INSERT INTO conversations (title) VALUES ('manual')").run().lastInsertRowid);
+    const ins = db.prepare('INSERT INTO messages (conversation_id, role, content) VALUES (?, ?, ?)');
+    for (let i = 0; i < 6; i++) {
+      ins.run(cid, 'user', `q${i} ` + 'y'.repeat(1200));
+      ins.run(cid, 'assistant', `a${i} ` + 'z'.repeat(1200));
+    }
+    const conv = db.prepare('SELECT * FROM conversations WHERE id = ?').get(cid);
+    const manualCfg = { baseUrl: cfg.baseUrl, apiKey: '', model: 'mock-gpt', contextCompressAt: 0, contextKeep: 1500 };
+    const mEvents = [];
+    const mres = await ctx.compressNow(conv, manualCfg, (ev, data) => mEvents.push({ ev, data }));
+    check('compressNow reports success', mres.compressed === true, JSON.stringify(mres));
+    check('compressNow shrinks tokens', mres.tokensAfter < mres.tokensBefore, `${mres.tokensBefore} → ${mres.tokensAfter}`);
+    check('compressNow emits compressed event', mEvents.some((e) => e.ev === 'compressed'), JSON.stringify(mEvents.map((e) => e.ev)));
+    const mconv = db.prepare('SELECT * FROM conversations WHERE id = ?').get(cid);
+    check('compressNow persisted summary', typeof mconv.summary === 'string' && mconv.summary.length > 0);
+    check('compressNow advanced summarized_upto', (mconv.summarized_upto || 0) > 0, String(mconv.summarized_upto));
+    // window 0 disables manual compaction too.
+    const mnoop = await ctx.compressNow(mconv, { ...manualCfg, contextKeep: 0 }, () => {});
+    check('compressNow window 0 does nothing', mnoop.compressed === false);
+  }
+
   console.log('\n== disabled ==');
   const conv1 = loadConv();
   const noop = await ctx.maybeCompress(conv1, { ...cfg, contextKeep: 0 }, () => {});

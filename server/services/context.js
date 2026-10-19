@@ -207,6 +207,95 @@ export async function maybeCompress(conversation, cfg, emit = () => {}, signal) 
   }
 }
 
+/**
+ * Manually compact a conversation NOW, regardless of whether it has crossed the
+ * auto-compress threshold. Used by the "Compact now" button. Rolls everything
+ * older than the recent keep-window into the running summary, exactly like the
+ * automatic path but without the "is it big enough yet?" check.
+ *
+ * @returns {compressed, tokensBefore, tokensAfter, skipped?, error?}
+ */
+export async function compressNow(conversation, cfg, emit = () => {}, signal) {
+  const window = cfg.contextKeep || 0;
+  if (!window) return { compressed: false, tokensBefore: 0, tokensAfter: 0, skipped: 'window-disabled' };
+
+  const summarizedUpto = conversation.summarized_upto || 0;
+  const before = currentPromptTokens(conversation, summarizedUpto);
+
+  const cutoff = chooseCompressCutoff(conversation.id, { summarizedUpto, keepTokens: window });
+  if (cutoff == null) return { compressed: false, tokensBefore: before, tokensAfter: before, skipped: 'nothing-eligible' };
+
+  const transcript = transcriptFrom(conversation.id, summarizedUpto, cutoff);
+  if (!transcript.trim()) return { compressed: false, tokensBefore: before, tokensAfter: before, skipped: 'empty' };
+
+  emit('notice', { message: 'Compressing older context…' });
+  const userMsg =
+    (conversation.summary ? `EXISTING SUMMARY:\n${conversation.summary}\n\n` : '') +
+    `NEW TURNS TO FOLD IN:\n${transcript}`;
+
+  try {
+    const json = await chatCompletion(cfg, {
+      messages: [
+        { role: 'system', content: SUMMARY_SYSTEM },
+        { role: 'user', content: userMsg }
+      ],
+      max_tokens: 700,
+      temperature: 0.2,
+      stream: false
+    }, { signal });
+    const text = (json?.choices?.[0]?.message?.content || '').trim();
+    if (!text) return { compressed: false, tokensBefore: before, tokensAfter: before, error: 'empty summary' };
+    db.prepare('UPDATE conversations SET summary = ?, summarized_upto = ? WHERE id = ?').run(text, cutoff, conversation.id);
+    conversation.summary = text;
+    conversation.summarized_upto = cutoff;
+    const after = currentPromptTokens(conversation, cutoff);
+    emit('compressed', { before_tokens: before, after_tokens: after, summarized_upto: cutoff });
+    return { compressed: true, tokensBefore: before, tokensAfter: after };
+  } catch (e) {
+    return { compressed: false, tokensBefore: before, tokensAfter: before, error: e.message };
+  }
+}
+
+const TRIMMED_TOOL_NOTE = '[older tool result trimmed to fit the context window]';
+
+/**
+ * Keep an in-flight message array within a token budget WITHOUT an extra model
+ * call. Used inside the tool loop: a single turn can fire dozens of tool calls,
+ * each returning up to 16k chars, so the live `messages` array can balloon to
+ * hundreds of thousands of tokens even though the stored history was already
+ * window-trimmed at turn start.
+ *
+ * Strategy: walk newest→oldest and, once past the keep budget, replace the body
+ * of older `tool` results with a short note. Message objects are never removed
+ * (that would orphan an assistant tool_call or a tool result and break strict
+ * servers) — only their bulky text is elided. Returns true if anything changed.
+ *
+ * Mutates `messages` in place.
+ */
+export function trimMessagesInPlace(messages, keepTokens) {
+  const budget = keepTokens || 0;
+  if (!budget) return false;
+  if (estimateTokens(messages) <= budget) return false;
+  // Count tokens contributed by the messages we always keep verbatim (the most
+  // recent ones up to the budget). Anything older is a candidate for eliding.
+  let acc = 0;
+  let changed = false;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i];
+    const size = estimateTokens([m]);
+    if (acc + size <= budget) {
+      acc += size;
+      continue;
+    }
+    // Over budget. Elide bulky tool-result bodies; leave short/structural msgs.
+    if (m.role === 'tool' && typeof m.content === 'string' && m.content.length > TRIMMED_TOOL_NOTE.length) {
+      m.content = TRIMMED_TOOL_NOTE;
+      changed = true;
+    }
+  }
+  return changed;
+}
+
 /** Estimated prompt tokens for the conversation given a summary split point. */
 function currentPromptTokens(conversation, summarizedUpto) {
   const msgs = [];

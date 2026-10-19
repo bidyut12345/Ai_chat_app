@@ -53,6 +53,11 @@ function policyFromBody(body, base) {
   return { values: out };
 }
 
+/** Fetch a conversation owned by the signed-in user (or null). */
+function ownedConv(req, id) {
+  return db.prepare('SELECT * FROM conversations WHERE id = ? AND user_id = ?').get(Number(id), req.user.id) || null;
+}
+
 function withPrompt(conv) {
   if (!conv) return conv;
   const prompt = conv.prompt_id
@@ -70,9 +75,10 @@ router.get('/', (req, res) => {
               (SELECT substr(replace(coalesce((SELECT m.content FROM messages m WHERE m.conversation_id = c.id ORDER BY m.id DESC LIMIT 1), ''), char(10), ' '), 1, 120) AS preview
         ) AS preview
        FROM conversations c
+       WHERE c.user_id = ?
        ORDER BY datetime(c.updated_at) DESC, c.id DESC`
     )
-    .all();
+    .all(req.user.id);
   res.json(rows.map(withPrompt));
 });
 
@@ -86,8 +92,8 @@ router.post('/', (req, res) => {
   const info = db
     .prepare(
       `INSERT INTO conversations
-        (title, prompt_id, model, image_url, workdir, approval_mode, file_access, shell_access, files_enabled, shell_enabled, reasoning_effort)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        (title, prompt_id, model, image_url, workdir, approval_mode, file_access, shell_access, files_enabled, shell_enabled, reasoning_effort, user_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
       title && String(title).trim() ? String(title).trim() : 'New chat',
@@ -100,7 +106,8 @@ router.post('/', (req, res) => {
       values.shell_access,
       values.files_enabled,
       values.shell_enabled,
-      normalizeEffort(req.body?.reasoning_effort)
+      normalizeEffort(req.body?.reasoning_effort),
+      req.user.id
     );
   // Without an explicit folder, give the chat its own auto-created directory
   // under the aitemp parent: {aitemp_root}/{chat id}.
@@ -118,7 +125,7 @@ router.post('/', (req, res) => {
 
 // GET /api/conversations/:id
 router.get('/:id', (req, res) => {
-  const conv = db.prepare('SELECT * FROM conversations WHERE id = ?').get(Number(req.params.id));
+  const conv = ownedConv(req, req.params.id);
   if (!conv) return res.status(404).json({ error: 'conversation not found' });
   const messages = db.prepare('SELECT * FROM messages WHERE conversation_id = ? ORDER BY id').all(conv.id);
   res.json({ ...withPrompt(conv), messages });
@@ -128,7 +135,7 @@ router.get('/:id', (req, res) => {
 //                                file_access?, shell_access?, files_enabled?, shell_enabled? }
 router.patch('/:id', (req, res) => {
   const id = Number(req.params.id);
-  const conv = db.prepare('SELECT * FROM conversations WHERE id = ?').get(id);
+  const conv = ownedConv(req, id);
   if (!conv) return res.status(404).json({ error: 'conversation not found' });
   const b = req.body || {};
   const base = {};
@@ -165,7 +172,7 @@ router.patch('/:id', (req, res) => {
 
 // DELETE /api/conversations/:id
 router.delete('/:id', (req, res) => {
-  const info = db.prepare('DELETE FROM conversations WHERE id = ?').run(Number(req.params.id));
+  const info = db.prepare('DELETE FROM conversations WHERE id = ? AND user_id = ?').run(Number(req.params.id), req.user.id);
   if (!info.changes) return res.status(404).json({ error: 'conversation not found' });
   res.json({ ok: true });
 });
@@ -173,7 +180,7 @@ router.delete('/:id', (req, res) => {
 // POST /api/conversations/:id/messages { role, content, image_url? } -> manual insert (e.g. import)
 router.post('/:id/messages', (req, res) => {
   const id = Number(req.params.id);
-  if (!db.prepare('SELECT id FROM conversations WHERE id = ?').get(id)) {
+  if (!ownedConv(req, id)) {
     return res.status(404).json({ error: 'conversation not found' });
   }
   const { role, content, image_url } = req.body || {};
@@ -189,6 +196,7 @@ router.post('/:id/messages', (req, res) => {
 
 // DELETE /api/conversations/:id/messages/:messageId
 router.delete('/:id/messages/:messageId', (req, res) => {
+  if (!ownedConv(req, req.params.id)) return res.status(404).json({ error: 'conversation not found' });
   const info = db
     .prepare('DELETE FROM messages WHERE id = ? AND conversation_id = ?')
     .run(Number(req.params.messageId), Number(req.params.id));
@@ -199,6 +207,7 @@ router.delete('/:id/messages/:messageId', (req, res) => {
 // POST /api/conversations/:id/truncate-after { message_id } -> drop later messages (edit/regenerate)
 router.post('/:id/truncate-after', (req, res) => {
   const id = Number(req.params.id);
+  if (!ownedConv(req, id)) return res.status(404).json({ error: 'conversation not found' });
   const messageId = Number(req.body?.message_id);
   if (!Number.isFinite(messageId)) return res.status(400).json({ error: 'message_id is required' });
   const info = db

@@ -3,7 +3,7 @@ rem ============================================================
 rem  Everything, in order:
 rem    1. Strata model server  (C:\AI\Strata, port 8080)
 rem    2. wait until its API answers (the weights take minutes)
-rem    3. Local AI Chat        (port 3000, open on the LAN)
+rem    3. RiSriGPT        (port 3000, open on the LAN)
 rem  This is what the boot task runs.
 rem ============================================================
 setlocal

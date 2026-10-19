@@ -43,6 +43,23 @@ CREATE TABLE IF NOT EXISTS settings (
   value TEXT
 );
 
+CREATE TABLE IF NOT EXISTS users (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  username      TEXT NOT NULL UNIQUE COLLATE NOCASE,
+  password_hash TEXT NOT NULL,
+  is_admin      INTEGER NOT NULL DEFAULT 0,
+  created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS sessions (
+  token      TEXT PRIMARY KEY,
+  user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  expires_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
+
 CREATE TABLE IF NOT EXISTS system_prompts (
   id          INTEGER PRIMARY KEY AUTOINCREMENT,
   name        TEXT NOT NULL,
@@ -146,6 +163,9 @@ export function initDb() {
   // Rolling context summary (auto-compress): text + id of last summarized msg.
   addConvCol('summary TEXT');
   addConvCol('summarized_upto INTEGER NOT NULL DEFAULT 0');
+  // Owner of the conversation. NULL means it predates multi-user auth and is
+  // claimed by the first user to register (see routes/auth.js).
+  addConvCol('user_id INTEGER REFERENCES users(id) ON DELETE CASCADE');
   db.prepare("UPDATE conversations SET workdir = ? WHERE workdir IS NULL OR workdir = ''").run(DEFAULT_WORKDIR);
 
   // Seed default settings (first run only).

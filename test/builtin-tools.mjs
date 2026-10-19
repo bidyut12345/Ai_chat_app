@@ -154,6 +154,7 @@ async function main() {
   start('app', ['server/index.js'], {
     PORT: String(APP_PORT),
     DB_PATH: dbPath,
+    AUTH_DISABLED: '1',
     OPENAI_BASE_URL: `http://127.0.0.1:${MOCK_PORT}/v1`,
     OPENAI_MODEL: 'mock-gpt'
   });

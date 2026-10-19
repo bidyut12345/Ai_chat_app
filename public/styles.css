@@ -1,4 +1,4 @@
-/* Local AI Chat — ChatGPT-style UI */
+/* RiSriGPT — ChatGPT-style UI */
 
 :root {
   color-scheme: dark;
@@ -186,6 +186,257 @@ a {
   letter-spacing: .2px;
 }
 
+.brand-spacer {
+  flex: 1 1 auto;
+}
+
+/* User chip in the brand row */
+.user-chip {
+  position: relative;
+}
+
+.user-menu-btn {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 3px 10px 3px 3px;
+  cursor: pointer;
+  color: var(--text);
+  max-width: 150px;
+}
+
+.user-menu-btn:hover {
+  background: #212121;
+}
+
+.user-avatar {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: #4f8cff;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 700;
+  flex: 0 0 auto;
+}
+
+.user-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.user-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 60;
+  min-width: 190px;
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, .4);
+  padding: 6px;
+}
+
+.user-menu-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 10px 10px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 4px;
+  font-size: 13px;
+}
+
+.user-role {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: .5px;
+  color: var(--dim);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 1px 7px;
+}
+
+.user-menu-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: none;
+  color: var(--text);
+  padding: 8px 10px;
+  border-radius: 7px;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.user-menu-item:hover {
+  background: #383838;
+}
+
+.link-btn {
+  background: none;
+  border: none;
+  color: #6ea8ff;
+  cursor: pointer;
+  font-size: 12.5px;
+  padding: 2px 6px;
+}
+
+.link-btn:hover {
+  text-decoration: underline;
+}
+
+.link-btn.danger {
+  color: var(--danger);
+}
+
+.tag {
+  font-size: 9.5px;
+  text-transform: uppercase;
+  letter-spacing: .4px;
+  border-radius: 999px;
+  padding: 1px 6px;
+  margin-left: 6px;
+  background: #2b3a55;
+  color: #9dc2ff;
+}
+
+.users-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 14px;
+  padding: 10px;
+}
+
+.user-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 13.5px;
+}
+
+.user-row-name {
+  font-weight: 600;
+}
+
+.user-row-count {
+  margin-left: auto;
+  font-size: 12px;
+}
+
+.new-user-box {
+  border-top: 1px solid var(--border);
+  padding: 12px;
+}
+
+.nu-title {
+  font-size: 13px;
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+
+.nu-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.nu-row input[type=text],
+.nu-row input[type=password] {
+  flex: 1 1 120px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  padding: 8px 10px;
+}
+
+.nu-admin {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12.5px;
+  color: var(--dim);
+}
+
+/* Login / setup overlay */
+.login-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  display: grid;
+  place-items: center;
+  background: var(--bg-side);
+  padding: 20px;
+}
+
+.login-card {
+  width: 100%;
+  max-width: 360px;
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  padding: 28px 26px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, .5);
+}
+
+.login-brand {
+  font-size: 18px;
+  font-weight: 700;
+  margin-bottom: 18px;
+}
+
+.login-title {
+  font-size: 15px;
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+
+.login-sub {
+  font-size: 12.5px;
+  color: var(--dim);
+  margin: 0 0 16px;
+  line-height: 1.5;
+}
+
+.login-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.login-error {
+  background: rgba(255, 107, 107, .12);
+  border: 1px solid var(--danger);
+  color: var(--danger);
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-size: 12.5px;
+}
+
+.login-switch {
+  margin-top: 16px;
+  font-size: 13px;
+  color: var(--dim);
+  text-align: center;
+}
+
 .app-spinner {
   width: 15px;
   height: 15px;
@@ -197,11 +448,15 @@ a {
 }
 
 @keyframes app-spin {
-  to { transform: rotate(360deg); }
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .app-spinner { animation-duration: 1.6s; }
+  .app-spinner {
+    animation-duration: 1.6s;
+  }
 }
 
 .new-chat-btn {
@@ -1000,6 +1255,26 @@ a {
 }
 
 /* Context / token totals in the composer hint */
+.ctx-compact-btn {
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--dim);
+  border-radius: 999px;
+  padding: 1px 8px;
+  font-size: 11px;
+  line-height: 1.5;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.ctx-compact-btn:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--text);
+}
+.ctx-compact-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
 .composer-hint #hint-tokens {
   display: inline-flex;
   align-items: center;
@@ -1704,7 +1979,7 @@ a {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 14px 18px;
+  padding: 0px 18px;
   border-bottom: 1px solid #3a3a3a;
 }
 

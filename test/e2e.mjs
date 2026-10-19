@@ -16,6 +16,44 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const APP = process.env.APP_URL || 'http://127.0.0.1:3000';
 const MOCK_PORT = 8899;
 
+// Optional auth: if the target server requires login, E2E_USER/E2E_PASS are
+// used to obtain a session cookie. If auth is disabled the login attempt is a
+// harmless no-op.
+let AUTH_COOKIE = '';
+const E2E_USER = process.env.E2E_USER || 'e2e';
+const E2E_PASS = process.env.E2E_PASS || 'e2epass123';
+
+// fetch wrapper that attaches the session cookie when present.
+function authFetch(url, opts = {}) {
+  return fetch(url, { ...opts, headers: { ...(opts.headers || {}), ...(AUTH_COOKIE ? { Cookie: AUTH_COOKIE } : {}) } });
+}
+
+async function ensureLoggedIn() {
+  let status;
+  try {
+    status = await (await fetch(`${APP}/api/auth/status`)).json();
+  } catch {
+    return; // older server without auth routes
+  }
+  if (status?.authenticated) return;
+  const path = status?.needs_setup ? '/api/auth/register' : '/api/auth/login';
+  let res = await fetch(`${APP}${path}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username: E2E_USER, password: E2E_PASS })
+  });
+  // If login fails (user doesn't exist yet), fall back to register.
+  if (!res.ok && path.endsWith('/login')) {
+    res = await fetch(`${APP}/api/auth/register`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: E2E_USER, password: E2E_PASS })
+    });
+  }
+  const sc = res.headers.get('set-cookie');
+  if (sc) AUTH_COOKIE = sc.split(';')[0];
+}
+
 let failures = 0;
 let TEMP_ROOT = null;
 function check(name, cond, extra = '') {
@@ -24,7 +62,7 @@ function check(name, cond, extra = '') {
 }
 
 async function req(method, p, body) {
-  const res = await fetch(`${APP}${p}`, {
+  const res = await authFetch(`${APP}${p}`, {
     method,
     headers: { 'Content-Type': 'application/json' },
     body: body == null ? undefined : JSON.stringify(body)
@@ -44,11 +82,13 @@ async function readSseTurn(payload) {
   // POST starts the background run; GET /api/chat/stream replays its events.
   const start = await fetch(`${APP}/api/chat`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...(AUTH_COOKIE ? { Cookie: AUTH_COOKIE } : {}) },
     body: JSON.stringify(payload)
   });
   if (!start.ok) throw new Error(`chat -> ${start.status}: ${await start.text()}`);
-  const res = await fetch(`${APP}/api/chat/stream?conversation_id=${payload.conversation_id}&last_event_id=0`);
+  const res = await fetch(`${APP}/api/chat/stream?conversation_id=${payload.conversation_id}&last_event_id=0`, {
+    headers: { ...(AUTH_COOKIE ? { Cookie: AUTH_COOKIE } : {}) }
+  });
   const events = [];
   const reader = res.body.getReader();
   const dec = new TextDecoder();
@@ -80,6 +120,8 @@ process.on('exit', () => mock.kill());
 await new Promise((r) => setTimeout(r, 800));
 
 try {
+  // Authenticate first (no-op if the server has auth disabled).
+  await ensureLoggedIn();
   // Remove leftovers from previous runs so the test is repeatable.
   for (const c of await req('GET', '/api/conversations')) await req('DELETE', `/api/conversations/${c.id}`).catch(() => {});
   for (const p of await req('GET', '/api/prompts')) {
@@ -245,9 +287,9 @@ try {
   const mk = await req('POST', '/api/fs/mkdir', { path: path.join(tmpRoot, 'picked', 'nested') });
   check('mkdir creates nested folder', fs.existsSync(path.join(tmpRoot, 'picked', 'nested')), mk.path);
   fs.writeFileSync(path.join(tmpRoot, 'afile.txt'), 'x');
-  const fileBrowse = await fetch(`${APP}/api/fs/browse?path=${encodeURIComponent(path.join(tmpRoot, 'afile.txt'))}`);
+  const fileBrowse = await authFetch(`${APP}/api/fs/browse?path=${encodeURIComponent(path.join(tmpRoot, 'afile.txt'))}`);
   check('browse of a file is 400', fileBrowse.status === 400, String(fileBrowse.status));
-  const missing = await fetch(`${APP}/api/fs/browse?path=${encodeURIComponent(path.join(tmpRoot, 'nope'))}`);
+  const missing = await authFetch(`${APP}/api/fs/browse?path=${encodeURIComponent(path.join(tmpRoot, 'nope'))}`);
   check('browse of missing folder is 404', missing.status === 404, String(missing.status));
 
   console.log('\n== chat file manager ==');
@@ -270,9 +312,9 @@ try {
   });
   check('upload accepted', up.name === 'up.txt' && up.size === 14, JSON.stringify(up));
   check('uploaded file written', fs.readFileSync(path.join(workdir, 'sub', 'up.txt'), 'utf8') === 'uploaded bytes');
-  const dl = await fetch(`${APP}${F}/raw?path=${encodeURIComponent('sub/bye.txt')}&download=1`);
+  const dl = await authFetch(`${APP}${F}/raw?path=${encodeURIComponent('sub/bye.txt')}&download=1`);
   check('download is an attachment', /attachment/.test(dl.headers.get('content-disposition') || ''), dl.headers.get('content-disposition'));
-  const escape = await fetch(`${APP}${F}?path=..`);
+  const escape = await authFetch(`${APP}${F}?path=..`);
   check('escape outside workdir blocked', escape.status === 403, String(escape.status));
   await req('POST', `${F}/delete`, { path: 'sub/bye.txt' });
   check('deleted', !fs.existsSync(path.join(workdir, 'sub', 'bye.txt')));
@@ -297,7 +339,7 @@ try {
   check('produced files persisted', /note\.txt/.test(fmsg.files || ''), fmsg.files);
   check('usage persisted', fmsg.prompt_tokens === 160 && fmsg.completion_tokens === 39, `${fmsg.prompt_tokens}/${fmsg.completion_tokens}`);
   check('speeds persisted', Math.round(fmsg.pp_tok_s) === 2000 && Math.round(fmsg.tg_tok_s) === 100, `${fmsg.pp_tok_s}/${fmsg.tg_tok_s}`);
-  const fdl = await fetch(`${APP}/api/conversations/${fileConv.id}/fs/raw?path=note.txt&download=1`);
+  const fdl = await authFetch(`${APP}/api/conversations/${fileConv.id}/fs/raw?path=note.txt&download=1`);
   check('produced file downloadable', fdl.ok && (await fdl.text()) === 'made by model');
   await req('DELETE', `/api/conversations/${fileConv.id}`);
 

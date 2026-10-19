@@ -1,5 +1,5 @@
 <#
-  Local AI Chat - one-shot setup for:
+  RiSriGPT - one-shot setup for:
     * model server + chat app exposed on the LAN
     * Windows firewall exceptions for ports 3000 and 8080
     * autostart at every Windows boot (Scheduled Task, runs before logon)
@@ -17,9 +17,9 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $root      = Split-Path -Parent $MyInvocation.MyCommand.Path
-$taskName  = 'Local AI Chat'
+$taskName  = 'RiSriGPT'
 $vbs       = Join-Path $root 'start-all-hidden.vbs'
-$fwp       = 'Local AI Chat'
+$fwp       = 'RiSriGPT'
 
 # ---------- self elevate ----------
 $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()
@@ -81,11 +81,11 @@ $principal = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" 
 
 Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger `
   -Settings $settings -Principal $principal -Description `
-  'Starts the gufo model server (8080) and Local AI Chat (3000, as admin) at Windows startup.' -Force | Out-Null
+  'Starts the gufo model server (8080) and RiSriGPT (3000, as admin) at Windows startup.' -Force | Out-Null
 Write-Host "Scheduled task '$taskName' registered (runs at boot, before logon)."
 
 Write-Host ''
-Write-Host 'Done. Start it now with:  Start-ScheduledTask -TaskName "Local AI Chat"'
+Write-Host 'Done. Start it now with:  Start-ScheduledTask -TaskName "RiSriGPT"'
 Write-Host 'LAN address: ' ((Get-NetIPAddress -AddressFamily IPv4 |
   Where-Object { $_.IPAddress -notlike '127.*' -and $_.IPAddress -notlike '169.254.*' -and $_.PrefixOrigin -ne 'WellKnown' } |
   Select-Object -First 3 -ExpandProperty IPAddress) -join ', ')

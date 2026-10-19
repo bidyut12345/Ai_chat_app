@@ -1,5 +1,5 @@
 ' ============================================================
-'  Starts the Local AI Chat server with NO console window at all.
+'  Starts the RiSriGPT server with NO console window at all.
 '  Output goes to logs\server.log. Stop it with stop-server.bat.
 '  Usage: cscript //nologo start-server-hidden.vbs [port]
 ' ============================================================

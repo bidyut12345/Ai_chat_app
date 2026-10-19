@@ -1,4 +1,4 @@
-/* Local AI Chat — frontend */
+/* RiSriGPT — frontend */
 'use strict';
 
 const $ = (sel, root = document) => root.querySelector(sel);
@@ -31,8 +31,14 @@ const state = {
   abort: null,
   attachments: [],
   pendingNewPrompt: false,
-  search: ''
+  search: '',
+  // Auth state: current signed-in user and whether the first account is needed.
+  currentUser: null,
+  needsSetup: false
 };
+
+// Interval id for the running-generations poll (started once after login).
+let authPollTimer = null;
 
 /* ───────────────────────── API helpers ───────────────────────── */
 async function api(path, opts = {}) {
@@ -48,7 +54,11 @@ async function api(path, opts = {}) {
   } catch {
     data = { raw: text };
   }
-  if (!res.ok) throw new Error(data?.error || `${res.status} ${res.statusText}`);
+  if (!res.ok) {
+    // A 401 flagged as `auth` means the session expired / isn't signed in.
+    if (res.status === 401 && data?.auth && !opts.__noAuthGate) showLogin();
+    throw new Error(data?.error || `${res.status} ${res.statusText}`);
+  }
   return data;
 }
 
@@ -311,8 +321,9 @@ function renderContextMeter(totals, window) {
     bits.push(`Σ ${fmtTokens(totals.processed)} in · ${fmtTokens(totals.generated)} out`);
   }
   let bar = '';
+  const effKeep = Number(state.settings.context_keep) || 0;
   const winNote = (window > 0 ? `window ${fmtTokens(window)} · ` : '') +
-    (Number(state.settings.context_keep) > 0 ? `sent ≤ ${fmtTokens(Number(state.settings.context_keep))} recent tokens` : 'no trim');
+    (effKeep > 0 ? `sent ≤ ${fmtTokens(effKeep)} recent tokens` : 'no trim');
   if (window > 0 && totals.context > 0) {
     const pct = Math.min(100, Math.round((totals.context / window) * 100));
     const cls = pct >= 90 ? 'ctx-high' : pct >= 70 ? 'ctx-mid' : '';
@@ -326,6 +337,37 @@ function renderContextMeter(totals, window) {
     bar = `<span class="ctx-meter ctx-idle" title="${winNote}">ctx —</span>`;
   }
   el2.innerHTML = bits.map((b) => `<span class="ctx-tok">${b}</span>`).join('') + bar;
+}
+
+/**
+ * Manually roll older turns into the summary now (the "Compact" button).
+ * Blocked while a generation is running for this chat. Reports the token
+ * reduction in a toast; the meter refreshes on the next turn.
+ */
+async function compactNow() {
+  if (!state.currentId) return toast('Open a chat first.', true);
+  if (runningIds.has(state.currentId)) return toast('Stop the current generation before compacting.', true);
+  const btn = $('#btn-compact');
+  btn.disabled = true;
+  const prev = btn.textContent;
+  btn.textContent = '⏳ Compacting…';
+  try {
+    const r = await api('/chat/compact', { method: 'POST', body: { conversation_id: state.currentId } });
+    if (r.compressed) {
+      const b = (r.before_tokens || 0).toLocaleString();
+      const a = (r.after_tokens || 0).toLocaleString();
+      toast(`Context compacted: ${b} → ${a} tokens`);
+    } else if (r.skipped === 'nothing-eligible') {
+      toast('Nothing to compact yet — the recent window already covers the chat.');
+    } else {
+      toast('Nothing to compact.');
+    }
+  } catch (e) {
+    toast(e.message || 'Compaction failed.', true);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = prev;
+  }
 }
 
 /* ───────────────────────── Per-chat tool policy ─────────────────────────
@@ -397,7 +439,7 @@ function renderMessages() {
 function buildEmptyState() {
   const d = el('div', { id: 'empty-state', class: 'empty-state' },
     el('div', { class: 'empty-emoji' }, '🤖'),
-    el('h2', {}, 'Local AI Chat'),
+    el('h2', {}, 'RiSriGPT'),
     el('p', { html: 'Your conversations are stored in a local SQLite database.<br>Point Settings at any OpenAI-compatible server (LM Studio, Ollama, llama.cpp, vLLM, OpenAI…).' }),
     el('div', { class: 'empty-actions' },
       el('button', { class: 'btn btn-primary', onclick: () => newConversation() }, 'Start a chat'),
@@ -1259,6 +1301,11 @@ function attachToRun(conversationId, lastEventId = 0) {
     gotText: false,
     startedAt: Date.now(),
     firstTokenAt: null,
+    // Time spent actually generating tokens (reasoning + answer), accumulated in
+    // small increments so tool-execution and re-prefill gaps are excluded. This
+    // keeps the live tok/s accurate across multi-round tool turns.
+    genMs: 0,
+    lastTokenAt: 0,
     outChars: 0,
     reasonChars: 0,
     stats: null,
@@ -1267,17 +1314,17 @@ function attachToRun(conversationId, lastEventId = 0) {
 
   // Live ⏱ tok/s readout. We don't know the real token count mid-stream, so
   // estimate from characters (~4 chars/token) — the accurate figure arrives in
-  // the final 'stats' event from the server's own counters.
+  // the final 'stats' event from the server's own counters. Speed is measured
+  // only over intervals where tokens are actively arriving: when a tool runs or
+  // the server re-prefills there is a large gap with no tokens, and counting
+  // that dead time would make the rate collapse.
   run.timer = setInterval(() => {
     if (!run) return;
     const secs = (Date.now() - run.startedAt) / 1000;
     const bits = [`⏱ ${fmtDuration(secs * 1000)}`];
-    if (run.firstTokenAt) {
-      const gen = (Date.now() - run.firstTokenAt) / 1000;
-      // This is a thinking model: most generated tokens arrive as reasoning, so
-      // count both streams. The accurate figure still arrives in 'stats'.
+    if (run.genMs > 400) {
       const outTokens = (run.outChars + (run.reasonChars || 0)) / 4;
-      if (gen > 0.4) bits.push(`⚡ ${(outTokens / gen).toFixed(1)} tok/s gen (est.)`);
+      bits.push(`⚡ ${(outTokens / (run.genMs / 1000)).toFixed(1)} tok/s gen (est.)`);
     }
     if (run.live.dataset.notice) bits.push(`· ${run.live.dataset.notice}`);
     run.live.textContent = bits.join('  ·  ');
@@ -1288,8 +1335,23 @@ function attachToRun(conversationId, lastEventId = 0) {
   openRunStream(run);
 }
 
-function openRunStream(r) {
-  const url = `/api/chat/stream?conversation_id=${r.conversationId}&last_event_id=${r.lastEventId}`;
+// A gap larger than this between two streamed tokens is treated as "not
+// generating" (tool execution, re-prefill, or a pause) and excluded from the
+// generation-time total, so the live tok/s reflects actual decode speed.
+const CONTINUOUS_GAP_MS = 700;
+
+/** Record a streamed token (reasoning or answer) toward generation time. */
+function noteToken(r) {
+  const now = Date.now();
+  if (!r.firstTokenAt) r.firstTokenAt = now;
+  if (r.lastTokenAt) {
+    const dt = now - r.lastTokenAt;
+    if (dt <= CONTINUOUS_GAP_MS) r.genMs += dt;
+  }
+  r.lastTokenAt = now;
+}
+
+function openRunStream(r) {  const url = `/api/chat/stream?conversation_id=${r.conversationId}&last_event_id=${r.lastEventId}`;
   const es = new EventSource(url);
   r.es = es;
   for (const name of ['delta', 'reasoning', 'notice', 'tool_call', 'tool_result', 'tool_cancelled', 'tool_denied', 'tool_unavailable', 'file_created', 'compressed', 'stats', 'done', 'error', 'resync', 'idle']) {
@@ -1349,16 +1411,14 @@ function handleRunEvent(r, event, d) {
   if (run !== r) return;
   const bubble = r.bubble;
   if (event === 'delta') {
-    if (!r.gotText) {
-      r.gotText = true;
-      if (!r.firstTokenAt) r.firstTokenAt = Date.now();
-    }
+    if (!r.gotText) r.gotText = true;
     sealThinking(r);
     if (!r.currentTextEl) {
       r.currentTextEl = el('div', { class: 'content' });
       bubble.append(r.currentTextEl);
     }
     r.outChars += (d.text || '').length;
+    noteToken(r);
     r.textBuf += d.text || '';
     r.currentTextEl.innerHTML = renderMarkdown(r.textBuf) + TYPING;
     scrollToBottomIfFollowing();
@@ -1372,8 +1432,8 @@ function handleRunEvent(r, event, d) {
   } else if (event === 'reasoning') {
     // Reasoning tokens are the first thing a thinking model generates, so they
     // seed the live speed timer and count toward the estimated rate.
-    if (!r.firstTokenAt) r.firstTokenAt = Date.now();
     r.reasonChars += (d.text || '').length;
+    noteToken(r);
     sealText(r);
     if (!r.activeThinking) {
       const box = el('details', { class: 'thinking', open: 'open' }, el('summary', {}, '🧠 Thinking…'));
@@ -2128,6 +2188,176 @@ async function answerApproval(id, allowed, scope) {
   }
 }
 
+/* ───────────────────────── Auth (login / users) ───────────────────────── */
+
+async function fetchAuthStatus() {
+  return api('/auth/status', { __noAuthGate: true });
+}
+
+let loginMode = 'login'; // 'login' | 'register'
+
+function showLogin() {
+  const ov = $('#login-overlay');
+  if (!ov || !ov.classList.contains('hidden')) return;
+  ov.classList.remove('hidden');
+  $('#login-error')?.classList.add('hidden');
+  $('#login-password').value = '';
+  setLoginMode(loginMode);
+  setTimeout(() => $('#login-username')?.focus(), 50);
+}
+
+function hideLogin() {
+  $('#login-overlay')?.classList.add('hidden');
+}
+
+// Switch the overlay between "Sign in" and "Create account" (setup when first
+// user, otherwise register a new ordinary user).
+function setLoginMode(mode) {
+  loginMode = mode;
+  const isSetup = mode === 'register' && state.needsSetup;
+  $('#login-title').textContent = mode === 'register' ? (isSetup ? 'Create the admin account' : 'Create an account') : 'Sign in';
+  $('#login-sub').textContent = mode === 'register'
+    ? (isSetup ? 'You are the first user, so this account will be the administrator and will receive any existing chats.' : 'Choose a username and password.')
+    : 'Sign in to continue.';
+  $('#login-submit').textContent = mode === 'register' ? (isSetup ? 'Create admin account' : 'Create account') : 'Sign in';
+  $('#login-switch-text').textContent = mode === 'register' ? 'Already have an account?' : 'No account?';
+  $('#login-toggle').textContent = mode === 'register' ? 'Sign in' : 'Create one';
+  $('#login-password').autocomplete = mode === 'register' ? 'new-password' : 'current-password';
+}
+
+async function submitLogin(e) {
+  e.preventDefault();
+  const username = $('#login-username').value.trim();
+  const password = $('#login-password').value;
+  const err = $('#login-error');
+  err.classList.add('hidden');
+  const btn = $('#login-submit');
+  btn.disabled = true;
+  try {
+    const path = loginMode === 'register' ? '/auth/register' : '/auth/login';
+    const r = await api(path, { method: 'POST', body: { username, password }, __noAuthGate: true });
+    state.currentUser = r.user;
+    if (loginMode === 'register' && r.claimed_conversations) {
+      toast(`${r.claimed_conversations} existing chat${r.claimed_conversations === 1 ? '' : 's'} moved to your account`);
+    }
+    hideLogin();
+    await afterLogin();
+  } catch (ex) {
+    err.textContent = ex.message;
+    err.classList.remove('hidden');
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function afterLogin() {
+  renderUserChip();
+  await Promise.all([loadSettings(), loadPrompts(), loadConversations(), loadMcp()]);
+  fillModelOptions(state.settings.model ? [state.settings.model] : []);
+  if (state.conversations.length) await openConversation(state.conversations[0].id);
+  else { renderMessages(); renderChatOptions(); }
+  updateToolsHint();
+  await refreshRunning();
+  if (!authPollTimer) authPollTimer = setInterval(refreshRunning, 4000);
+}
+
+function renderUserChip() {
+  const u = state.currentUser;
+  const chip = $('#user-chip');
+  if (!u) { chip.classList.add('hidden'); return; }
+  chip.classList.remove('hidden');
+  $('#user-avatar').textContent = u.username[0].toUpperCase();
+  $('#user-name').textContent = u.username;
+  $('#user-menu-name').textContent = u.username;
+  $('#user-menu-role').textContent = u.is_admin ? 'admin' : 'user';
+  $('#btn-manage-users').classList.toggle('hidden', !u.is_admin);
+}
+
+async function doLogout() {
+  try { await api('/auth/logout', { method: 'POST', __noAuthGate: true }); } catch { /* ignore */ }
+  state.currentUser = null;
+  state.conversations = [];
+  state.messages = [];
+  renderUserChip();
+  renderConvList();
+  renderMessages();
+  hideUserMenu();
+  loginMode = 'login';
+  const st = await fetchAuthStatus().catch(() => null);
+  if (st) { state.needsSetup = st.needs_setup; }
+  showLogin();
+}
+
+function hideUserMenu() { $('#user-menu')?.classList.add('hidden'); }
+
+/* ── Manage users (admin) ── */
+async function openUsersDialog() {
+  hideUserMenu();
+  $('#dlg-users').showModal();
+  await renderUsersList();
+}
+
+async function renderUsersList() {
+  const box = $('#users-list');
+  box.textContent = '';
+  let r;
+  try { r = await api('/auth/users'); } catch (e) { box.append(el('div', { class: 'muted' }, e.message)); return; }
+  for (const u of r.users) {
+    const row = el('div', { class: 'user-row' },
+      el('span', { class: 'user-row-name' }, u.username, u.is_admin ? el('span', { class: 'tag tag-admin' }, 'admin') : null),
+      el('span', { class: 'user-row-count muted' }, `${u.conversation_count} chats`)
+    );
+    if (u.id !== state.currentUser.id) {
+      row.append(
+        el('button', { class: 'link-btn', onclick: () => toggleAdmin(u) }, u.is_admin ? 'Revoke admin' : 'Make admin'),
+        el('button', { class: 'link-btn danger', onclick: () => deleteUser(u) }, 'Delete')
+      );
+    } else {
+      row.append(el('span', { class: 'muted' }, 'you'));
+    }
+    box.append(row);
+  }
+}
+
+async function toggleAdmin(u) {
+  try {
+    await api(`/auth/users/${u.id}`, { method: 'PATCH', body: { is_admin: !u.is_admin } });
+    await renderUsersList();
+  } catch (e) { toast(e.message, true); }
+}
+
+async function deleteUser(u) {
+  if (!confirm(`Delete user "${u.username}"? This permanently removes their chats.`)) return;
+  try {
+    await api(`/auth/users/${u.id}`, { method: 'DELETE' });
+    await renderUsersList();
+    toast('User deleted');
+  } catch (e) { toast(e.message, true); }
+}
+
+async function createUser() {
+  const username = $('#nu-username').value.trim();
+  const password = $('#nu-password').value;
+  const is_admin = $('#nu-admin').checked;
+  if (!username || !password) { toast('Username and password required', true); return; }
+  try {
+    await api('/auth/users', { method: 'POST', body: { username, password, is_admin } });
+    $('#nu-username').value = ''; $('#nu-password').value = ''; $('#nu-admin').checked = false;
+    await renderUsersList();
+    toast('User created');
+  } catch (e) { toast(e.message, true); }
+}
+
+async function changePassword(e) {
+  e.preventDefault();
+  try {
+    await api('/auth/change-password', { method: 'POST', body: { current: $('#cp-current').value, next: $('#cp-next').value } });
+    $('#cp-current').value = ''; $('#cp-next').value = '';
+    $('#dlg-change-password').close();
+    toast('Password updated');
+  } catch (err) { toast(err.message, true); }
+}
+
 /* ───────────────────────── Wiring ───────────────────────── */
 function wire() {
   $('#btn-new-chat').onclick = () => newConversation();
@@ -2175,6 +2405,7 @@ function wire() {
   });
   $('#input').addEventListener('input', autoresize);
   $('#btn-stop').onclick = stopStreaming;
+  $('#btn-compact').onclick = compactNow;
 
   // "+" menu: attachments plus this chat's options
   $('#btn-plus').onclick = (e) => {
@@ -2397,29 +2628,42 @@ function wire() {
       newConversation();
     }
     if (e.key === 'Escape' && state.streaming) stopStreaming();
+    if (e.key === 'Escape') hideUserMenu();
   });
+
+  // ── Auth UI ──
+  $('#login-form').addEventListener('submit', submitLogin);
+  $('#login-toggle').addEventListener('click', () => setLoginMode(loginMode === 'login' ? 'register' : 'login'));
+  $('#user-menu-btn').addEventListener('click', (e) => {
+    e.stopPropagation();
+    $('#user-menu').classList.toggle('hidden');
+  });
+  document.addEventListener('click', (e) => {
+    if (!e.target.closest('#user-chip')) hideUserMenu();
+  });
+  $('#btn-logout').addEventListener('click', doLogout);
+  $('#btn-manage-users').addEventListener('click', openUsersDialog);
+  $('#nu-create').addEventListener('click', createUser);
+  $('#change-password-form').addEventListener('submit', changePassword);
+  $('#btn-change-password').addEventListener('click', () => { hideUserMenu(); $('#dlg-change-password').showModal(); });
 }
 
 async function init() {
   wire();
   watchMessagesScroll();
   connectApprovalStream();
-  try {
-    await Promise.all([loadSettings(), loadPrompts(), loadConversations(), loadMcp()]);
-    fillModelOptions(state.settings.model ? [state.settings.model] : []);
-    if (state.conversations.length) await openConversation(state.conversations[0].id);
-    else {
-      renderMessages();
-      renderChatOptions();
-    }
-    updateToolsHint();
-    // Discover generations running on the server (survives reload / new tab).
-    await refreshRunning();
-    setInterval(refreshRunning, 4000);
-  } catch (e) {
-    console.error(e);
-    toast(`Failed to load: ${e.message}`, true);
+  // Auth gate: nothing loads until the session is verified.
+  let status = null;
+  try { status = await fetchAuthStatus(); } catch (e) { console.error(e); }
+  state.needsSetup = !!status?.needs_setup;
+  if (!status?.authenticated) {
+    loginMode = state.needsSetup ? 'register' : 'login';
+    showLogin();
+    return;
   }
+  state.currentUser = status.user;
+  renderUserChip();
+  await afterLogin();
 }
 
 window.addEventListener('DOMContentLoaded', init);

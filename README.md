@@ -1,4 +1,4 @@
-# Local AI Chat
+# RiSriGPT
 
 A self-hosted chat application that talks to **any OpenAI-compatible server**
 (LM Studio, Ollama, llama.cpp server, vLLM, LocalAI, OpenAI, …). Conversations,
@@ -53,7 +53,7 @@ Requires Node.js 22+ (global `fetch`, and the `better-sqlite3` prebuilds).
 .\install-autostart.ps1              # one UAC prompt, then:
                                      #  - firewall: allow inbound TCP 3000 + 8080
                                      #  - model config: "host": "0.0.0.0" (backs up the .json)
-                                     #  - Scheduled Task "Local AI Chat" at every boot, before logon
+                                     #  - Scheduled Task "RiSriGPT" at every boot, before logon
 .\install-autostart.ps1 -Remove      # removes the task and the firewall rules
 .\install-autostart.ps1 -LocalOnly   # autostart only, keep both servers on 127.0.0.1
 ```
@@ -61,8 +61,8 @@ Requires Node.js 22+ (global `fetch`, and the `better-sqlite3` prebuilds).
 The task is registered with an **AtStartup** trigger and `S4U` logon, so it runs
 when the machine boots, whether or not anyone logs in (`start-all.bat` waits 20 s
 first so the network has settled). Watch it with
-`Get-ScheduledTaskInfo "Local AI Chat"` and start it by hand with
-`Start-ScheduledTask -TaskName "Local AI Chat"`.
+`Get-ScheduledTaskInfo "RiSriGPT"` and start it by hand with
+`Start-ScheduledTask -TaskName "RiSriGPT"`.
 
 > The **model** server only re-reads `"host": "0.0.0.0"` when it is next launched, so a
 > model that was already running keeps listening on `127.0.0.1:8080` until you restart it.
@@ -85,7 +85,7 @@ VirtualBox) also appear in that list.
 > ⚠ **There is no login in this app.** Opening 3000 and 8080 to the network means
 > anyone on it can chat, spend your GPU, and call the model's own API. Keep it on a
 > trusted/private network, or restrict the two firewall rules to your subnet:
-> `Set-NetFirewallRule -DisplayGroup "Local AI Chat" -RemoteAddress 192.168.0.0/24`.
+> `Set-NetFirewallRule -DisplayGroup "RiSriGPT" -RemoteAddress 192.168.0.0/24`.
 > The model server also gains a DNS-rebinding host check once it listens beyond
 > loopback; if a client is refused, add its name via `allowed_hosts` in
 > `strata-unsloth-ud-iq4_xs.json`.

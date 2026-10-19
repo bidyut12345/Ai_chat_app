@@ -10,7 +10,7 @@ import { chatCompletion, consumeChatStream, mcpToolsToOpenAi, unavailableToolRes
 import { allTools, callTool } from './mcpManager.js';
 import { isPreApproved, requestApproval, denialResult } from './approvals.js';
 import { toolNeedsApproval, runWithConversation, resolvePath } from './builtin/policy.js';
-import { maybeCompress } from './context.js';
+import { maybeCompress, trimMessagesInPlace } from './context.js';
 
 const MAX_TOOL_RESULT_CHARS = 16000;
 
@@ -347,6 +347,11 @@ async function runChatTurnInner({ emit, signal, toolControl, conversation, cfg, 
     roundFiles = [];
     roundText = '';
     roundThink = '';
+    // Within a single tool-heavy turn the live `messages` array keeps growing
+    // (each round appends tool calls + up to 16k-char results). Trim bulky older
+    // tool results so we never re-send the whole turn's tool traffic — while
+    // preserving every call/result pairing (only older result bodies elide).
+    trimMessagesInPlace(messages, cfg.contextKeep);
     const body = { messages, stream: true, user: cacheKey, prompt_cache_key: cacheKey };
     if (toolSchemas) body.tools = toolSchemas;
     if (cfg.temperature != null) body.temperature = cfg.temperature;
