@@ -112,6 +112,42 @@ async function main() {
   const afterTokens = ctx.estimateTokens(buildMessages(conversationId, { summary: after.summary, summarizedUpto: after.summarized_upto }));
   check('prompt shrank after compression', afterTokens < beforeTokens, `${beforeTokens} → ${afterTokens}`);
 
+  console.log('\n== auto-compact at 95% of model window ==');
+  {
+    // Fresh chat. With a model window set, maybeCompress triggers at 95% of it
+    // even when the keep budget is larger (the 250k-in-250k case).
+    const cid = Number(db.prepare("INSERT INTO conversations (title) VALUES ('pct')").run().lastInsertRowid);
+    const ins = db.prepare('INSERT INTO messages (conversation_id, role, content) VALUES (?, ?, ?)');
+    for (let i = 0; i < 12; i++) {
+      ins.run(cid, 'user', `q${i} ` + 'y'.repeat(2000));
+      ins.run(cid, 'assistant', `a${i} ` + 'z'.repeat(2000));
+    }
+    const conv = db.prepare('SELECT * FROM conversations WHERE id = ?').get(cid);
+    const before = ctx.estimateTokens(buildMessages(cid, {}));
+    // keep budget small enough to allow a valid cutoff; window set so that 95%
+    // of it is just below the current prompt → triggers on the window, not keep.
+    const pctCfg = { baseUrl: cfg.baseUrl, apiKey: '', model: 'mock-gpt', contextCompressAt: 0, contextKeep: 1500, contextWindow: before };
+    const r = await ctx.maybeCompress(conv, pctCfg, () => {});
+    check('auto-compacts when prompt crosses 95% of window', r.compressed === true, JSON.stringify(r));
+    // With a much larger window (95% still above the prompt), it must NOT fire.
+    const conv2 = db.prepare('SELECT * FROM conversations WHERE id = ?').get(cid);
+    const r2 = await ctx.maybeCompress(conv2, { ...pctCfg, contextWindow: before * 10 }, () => {});
+    check('does not compact below 95% of window', r2.compressed === false, JSON.stringify(r2));
+  }
+
+  console.log('\n== contextStatus ==');
+  {
+    const cid = Number(db.prepare("INSERT INTO conversations (title) VALUES ('status')").run().lastInsertRowid);
+    const ins = db.prepare('INSERT INTO messages (conversation_id, role, content) VALUES (?, ?, ?)');
+    for (let i = 0; i < 4; i++) { ins.run(cid, 'user', `q${i} ` + 'y'.repeat(800)); ins.run(cid, 'assistant', `a${i} ` + 'z'.repeat(800)); }
+    const conv = db.prepare('SELECT * FROM conversations WHERE id = ?').get(cid);
+    const st = ctx.contextStatus(conv, { contextKeep: 5000, contextWindow: 10000, contextCompressAt: 0 });
+    check('contextStatus reports tokens', st.tokens > 0, JSON.stringify(st));
+    check('contextStatus trigger = 95% of window', st.trigger === Math.floor(10000 * 0.95), String(st.trigger));
+    const stNoWin = ctx.contextStatus(conv, { contextKeep: 5000, contextWindow: 0, contextCompressAt: 0 });
+    check('contextStatus trigger falls back to keep when no window', stNoWin.trigger === 5000, String(stNoWin.trigger));
+  }
+
   console.log('\n== history validity after compression ==');
   const msgs = buildMessages(conversationId, { summary: after.summary, summarizedUpto: after.summarized_upto });
   const callIds = new Set();
@@ -181,6 +217,34 @@ async function main() {
     // window 0 disables manual compaction too.
     const mnoop = await ctx.compressNow(mconv, { ...manualCfg, contextKeep: 0 }, () => {});
     check('compressNow window 0 does nothing', mnoop.compressed === false);
+  }
+
+  console.log('\n== compressNow levels (fits-inside-window case) ==');
+  {
+    // A chat that fits ENTIRELY inside the keep window (the reported 250k bug):
+    // with the full window as budget nothing is eligible, but a level keeps only
+    // a fraction so older turns still fold into the summary.
+    const cid = Number(db.prepare("INSERT INTO conversations (title) VALUES ('lvl')").run().lastInsertRowid);
+    const ins = db.prepare('INSERT INTO messages (conversation_id, role, content) VALUES (?, ?, ?)');
+    for (let i = 0; i < 12; i++) {
+      ins.run(cid, 'user', `q${i} ` + 'y'.repeat(1500));
+      ins.run(cid, 'assistant', `a${i} ` + 'z'.repeat(1500));
+    }
+    const lvlCfg = { baseUrl: cfg.baseUrl, apiKey: '', model: 'mock-gpt', contextCompressAt: 0, contextKeep: 20000 };
+    const conv = db.prepare('SELECT * FROM conversations WHERE id = ?').get(cid);
+    const rAuto = await ctx.compressNow(conv, lvlCfg, () => {}, undefined, 'auto');
+    check('level auto compacts a chat that fits the window', rAuto.compressed === true, JSON.stringify(rAuto));
+    check('level auto shrinks tokens', rAuto.tokensAfter < rAuto.tokensBefore, `${rAuto.tokensBefore} → ${rAuto.tokensAfter}`);
+    // A fresh chat: high (more aggressive) keeps less than low (gentler).
+    const cid2 = Number(db.prepare("INSERT INTO conversations (title) VALUES ('lvl2')").run().lastInsertRowid);
+    for (let i = 0; i < 12; i++) {
+      ins.run(cid2, 'user', `q${i} ` + 'y'.repeat(1500));
+      ins.run(cid2, 'assistant', `a${i} ` + 'z'.repeat(1500));
+    }
+    const conv2 = db.prepare('SELECT * FROM conversations WHERE id = ?').get(cid2);
+    const rHigh = await ctx.compressNow(conv2, lvlCfg, () => {}, undefined, 'high');
+    check('level high compacts', rHigh.compressed === true, JSON.stringify(rHigh));
+    check('high keeps <= auto (more aggressive)', rHigh.tokensAfter <= rAuto.tokensAfter, `high=${rHigh.tokensAfter} auto=${rAuto.tokensAfter}`);
   }
 
   console.log('\n== disabled ==');

@@ -642,6 +642,40 @@ a {
   min-width: 0;
 }
 
+.chat-title-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.chat-title-row .chat-title {
+  flex: 1;
+  min-width: 0;
+}
+
+.ai-title-btn {
+  flex: none;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--dim);
+  border-radius: 999px;
+  padding: 2px 8px;
+  font-size: 11px;
+  line-height: 1.4;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.ai-title-btn:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--text);
+}
+
+.ai-title-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
 .chat-title {
   width: 100%;
   background: transparent;
@@ -1255,6 +1289,25 @@ a {
 }
 
 /* Context / token totals in the composer hint */
+.ctx-compact-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.ctx-compact-level {
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--dim);
+  border-radius: 999px;
+  padding: 1px 4px;
+  font-size: 11px;
+  line-height: 1.5;
+  cursor: pointer;
+}
+.ctx-compact-level:hover {
+  border-color: var(--accent);
+  color: var(--text);
+}
 .ctx-compact-btn {
   border: 1px solid var(--border);
   background: transparent;
@@ -1273,6 +1326,22 @@ a {
 .ctx-compact-btn:disabled {
   opacity: 0.5;
   cursor: default;
+}
+.ctx-compact-btn.compacting {
+  opacity: 1;
+  color: var(--accent);
+  border-color: var(--accent);
+}
+/* Green pulse on the context meter right after a compaction. */
+.ctx-meter.ctx-flash,
+.ctx-flash {
+  animation: ctxFlash 1.4s ease;
+  border-radius: 6px;
+}
+@keyframes ctxFlash {
+  0% { box-shadow: 0 0 0 0 rgba(46, 204, 113, 0.0); background: rgba(46, 204, 113, 0.22); }
+  20% { box-shadow: 0 0 0 3px rgba(46, 204, 113, 0.45); }
+  100% { box-shadow: 0 0 0 0 rgba(46, 204, 113, 0.0); background: transparent; }
 }
 
 .composer-hint #hint-tokens {

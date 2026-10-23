@@ -153,23 +153,29 @@ function clip(s, n) {
  * @param {(event,data)=>void} emit stream events (for a 'compressed' notice)
  * @param {AbortSignal} signal abort if the user stops
  */
-export async function maybeCompress(conversation, cfg, emit = () => {}, signal) {
-  // Sliding-window policy: keep at most `contextKeep` tokens of the most recent
-  // turns verbatim and roll everything older into the summary. The window is
-  // the trigger too, so the prompt is trimmed on every turn that would exceed
-  // it — we never re-send the whole conversation. `contextCompressAt` is now an
-  // optional *earlier* hard cap (only used if it is smaller than the window).
-  const window = cfg.contextKeep || 0;
-  if (!window) return { compressed: false, tokensBefore: 0, tokensAfter: 0 };
+// Fraction of the model's context window at which auto-compaction kicks in.
+// Once the live prompt reaches this share of the window, older turns are rolled
+// into the summary before the next request goes out.
+export const AUTO_COMPACT_FRACTION = 0.95;
 
+export async function maybeCompress(conversation, cfg, emit = () => {}, signal) {
+  // Keep at most `contextKeep` tokens of the most recent turns verbatim; older
+  // turns roll into the summary. The trigger is 95% of the model's context
+  // window (when known) so we compact just before the window overflows; with no
+  // window configured we fall back to the keep budget as the trigger. An
+  // optional `contextCompressAt` can force an even earlier hard cap.
+  const keepTokens = cfg.contextKeep || 0;
+  if (!keepTokens) return { compressed: false, tokensBefore: 0, tokensAfter: 0 };
+
+  const modelWindow = cfg.contextWindow || 0;
+  const autoTrigger = modelWindow ? Math.floor(modelWindow * AUTO_COMPACT_FRACTION) : 0;
   const cap = cfg.contextCompressAt || 0;
-  const trigger = cap && cap < window ? cap : window;
+  let trigger = autoTrigger || keepTokens;
+  if (cap && cap < trigger) trigger = cap;
 
   const summarizedUpto = conversation.summarized_upto || 0;
   const before = currentPromptTokens(conversation, summarizedUpto);
   if (before <= trigger) return { compressed: false, tokensBefore: before, tokensAfter: before };
-
-  const keepTokens = window;
   const cutoff = chooseCompressCutoff(conversation.id, { summarizedUpto, keepTokens });
   if (cutoff == null) return { compressed: false, tokensBefore: before, tokensAfter: before, skipped: 'nothing-eligible' };
 
@@ -215,14 +221,31 @@ export async function maybeCompress(conversation, cfg, emit = () => {}, signal) 
  *
  * @returns {compressed, tokensBefore, tokensAfter, skipped?, error?}
  */
-export async function compressNow(conversation, cfg, emit = () => {}, signal) {
+// Manual-compaction levels. Each selects how much of the recent context to keep
+// VERBATIM (as a fraction of the configured keep window); everything older is
+// folded into the summary. A smaller fraction = more aggressive compaction.
+// Using a fraction (rather than the full window) is what makes a manual compact
+// actually do something even when the whole chat still fits inside the window.
+export const COMPACT_LEVELS = { low: 0.5, medium: 0.3, high: 0.15, auto: 0.3 };
+
+export function normalizeCompactLevel(level) {
+  const key = String(level || 'auto').toLowerCase();
+  return Object.prototype.hasOwnProperty.call(COMPACT_LEVELS, key) ? key : 'auto';
+}
+
+export async function compressNow(conversation, cfg, emit = () => {}, signal, level = 'auto') {
   const window = cfg.contextKeep || 0;
   if (!window) return { compressed: false, tokensBefore: 0, tokensAfter: 0, skipped: 'window-disabled' };
 
   const summarizedUpto = conversation.summarized_upto || 0;
   const before = currentPromptTokens(conversation, summarizedUpto);
 
-  const cutoff = chooseCompressCutoff(conversation.id, { summarizedUpto, keepTokens: window });
+  // Keep only a fraction of the window verbatim, but never so little that we
+  // drop the most recent turn. Floor at a sane minimum so an aggressive level
+  // still preserves the current exchange.
+  const keepTokens = Math.max(256, Math.floor(window * COMPACT_LEVELS[level]));
+
+  const cutoff = chooseCompressCutoff(conversation.id, { summarizedUpto, keepTokens });
   if (cutoff == null) return { compressed: false, tokensBefore: before, tokensAfter: before, skipped: 'nothing-eligible' };
 
   const transcript = transcriptFrom(conversation.id, summarizedUpto, cutoff);
@@ -254,6 +277,91 @@ export async function compressNow(conversation, cfg, emit = () => {}, signal) {
   } catch (e) {
     return { compressed: false, tokensBefore: before, tokensAfter: before, error: e.message };
   }
+}
+
+const TITLE_SYSTEM =
+  'You name conversations. From the user message (and optionally the reply), ' +
+  'write ONE short title: 2-6 words, under 48 characters, no quotes, no trailing ' +
+  'period, no leading dash or label. Use the same language as the user. Reply ' +
+  'with only the title text.';
+
+/** Turn the model's raw reply into a clean single-line title (or null). */
+function cleanTitle(raw) {
+  let t = String(raw || '').trim();
+  if (!t) return null;
+  t = t.split('\n')[0].trim();                 // first line only
+  t = t.replace(/^["'“”‘’\s]+/, '').replace(/["'“”‘’\s.]+$/, ''); // strip quotes/period
+  t = t.replace(/^[-–—:*>\s]+/, '');           // strip leading bullet/dash/label
+  t = t.replace(/^title\s*[:\-]\s*/i, '');     // strip a "Title:" prefix
+  t = t.replace(/\s+/g, ' ').trim();
+  if (!t) return null;
+  if (t.length > 60) t = `${t.slice(0, 59).trimEnd()}…`;
+  return t;
+}
+
+/**
+ * Generate a short conversation title from the first user message (and the
+ * assistant reply when available). Pure — does not write the DB; the caller
+ * persists it. Returns the cleaned title string or null if it can't/shouldn't.
+ */
+export async function generateTitle(conversation, cfg, { question, answer, signal } = {}) {
+  const q = String(question ?? '').trim();
+  if (!q) return null; // image-only / empty first turn: nothing to name from
+  const a = String(answer ?? '').trim();
+  const userMsg = a ? `USER MESSAGE:\n${q}\n\nREPLY:\n${a}` : `USER MESSAGE:\n${q}`;
+  // Titling must not burn the token budget on chain-of-thought: request minimal
+  // reasoning (so `content` isn't left empty by a reasoning model) and give a
+  // little headroom. Fall back to the reasoning text if content is blank.
+  const baseBody = () => ({
+    messages: [
+      { role: 'system', content: TITLE_SYSTEM },
+      { role: 'user', content: userMsg }
+    ],
+    max_tokens: 200,
+    temperature: 0.3,
+    stream: false
+  });
+  let modelErr = null;
+  try {
+    // chatCompletion forwards the body verbatim, so set the field here (not on cfg).
+    let json;
+    try {
+      json = await chatCompletion(cfg, { ...baseBody(), reasoning_effort: 'minimal' }, { signal });
+    } catch (e1) {
+      // Servers that don't understand reasoning_effort reject it — retry without.
+      try {
+        json = await chatCompletion(cfg, baseBody(), { signal });
+      } catch (e2) {
+        modelErr = e2;
+      }
+    }
+    if (json) {
+      const msg = json?.choices?.[0]?.message || {};
+      const primary = cleanTitle(msg.content);
+      if (primary) return primary;
+      // Reasoning models sometimes answer only in the thinking field.
+      const fromReasoning = cleanTitle(msg.reasoning_content || msg.reasoning);
+      if (fromReasoning) return fromReasoning;
+    }
+  } catch (e) {
+    modelErr = modelErr || e;
+  }
+  // Guaranteed fallback: derive a readable title from the first user message so
+  // the button always produces something instead of failing with a 502. Log the
+  // real model error so it can be diagnosed from the server console.
+  if (modelErr) console.warn('[title] model failed, using fallback title:', modelErr.message || modelErr);
+  return cleanTitle(q) || fallbackTitle(q);
+}
+
+/** Last-resort title: first meaningful line/phrase of the user's message. */
+function fallbackTitle(text) {
+  const line = String(text || '').replace(/\s+/g, ' ').trim();
+  if (!line) return null;
+  // Prefer the first sentence up to ~6 words, else first 48 chars.
+  const firstClause = line.split(/[.!?\n]/)[0].trim();
+  const words = firstClause.split(' ').slice(0, 8).join(' ').trim();
+  const base = words || firstClause || line;
+  return base.length > 48 ? `${base.slice(0, 47).trimEnd()}…` : base;
 }
 
 const TRIMMED_TOOL_NOTE = '[older tool result trimmed to fit the context window]';
@@ -315,4 +423,32 @@ function currentPromptTokens(conversation, summarizedUpto) {
     msgs.push(m);
   }
   return estimateTokens(msgs);
+}
+
+/**
+ * Live context snapshot for the meter: the estimated prompt tokens the *next*
+ * request would send (honouring the current summary split), the configured
+ * window/keep budgets, and the auto-compaction trigger. Unlike the meter's
+ * historical "largest prompt so far", this shrinks immediately after a manual
+ * or automatic compaction, so the UI can reflect the reduction at once.
+ */
+export function contextStatus(conversation, cfg) {
+  const summarizedUpto = conversation.summarized_upto || 0;
+  const tokens = currentPromptTokens(conversation, summarizedUpto);
+  const modelWindow = cfg.contextWindow || 0;
+  const keep = cfg.contextKeep || 0;
+  const cap = cfg.contextCompressAt || 0;
+  const autoTrigger = modelWindow ? Math.floor(modelWindow * AUTO_COMPACT_FRACTION) : 0;
+  let trigger = autoTrigger || keep;
+  if (cap && cap < trigger) trigger = cap;
+  return {
+    tokens,
+    window: modelWindow,
+    keep,
+    trigger: trigger || null,
+    summarize_threshold: trigger || null,
+    auto_compact_fraction: AUTO_COMPACT_FRACTION,
+    summarized_upto: summarizedUpto,
+    has_summary: !!conversation.summary
+  };
 }

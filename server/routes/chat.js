@@ -3,7 +3,7 @@ import { db } from '../db.js';
 import { sseInit } from '../sse.js';
 import { runtimeConfig } from '../services/openai.js';
 import { loadConversation } from '../services/chatService.js';
-import { compressNow } from '../services/context.js';
+import { compressNow, normalizeCompactLevel, contextStatus } from '../services/context.js';
 import { startRun, subscribe, stopRun, cancelToolCall, activeRuns } from '../services/runManager.js';
 
 const router = Router();
@@ -51,6 +51,10 @@ router.post('/', async (req, res) => {
     return res.status(400).json({ error: 'No model selected. Set a model in Settings (or pick one for this chat).' });
   }
 
+  // A chat is "untitled" until the user names it or it gets its first message.
+  // We title that first turn with AI after the reply, so capture the moment here.
+  const wasUntitled = !conversation.title || conversation.title === 'New chat';
+
   if (regenerate) {
     // Remove the trailing assistant message so the model answers again.
     const last = db
@@ -68,15 +72,21 @@ router.post('/', async (req, res) => {
       text,
       image_url || null
     );
-    autoTitle(conversation, text);
+    // Immediate placeholder so the sidebar isn't a row of "New chat" while the
+    // AI title is generated after the reply.
+    if (wasUntitled) autoTitle(conversation, text);
   }
 
   const run = startRun({
     conversation,
     cfg,
     useTools: use_tools !== false,
-    extraSystem: extra_system
+    extraSystem: extra_system,
+    // Name the chat with AI after the first turn (only when it's still untitled
+    // and this is a fresh user message, not a regenerate).
+    aiTitle: wasUntitled && !regenerate ? String(content ?? '').trim() : null
   });
+
   res.json({ ok: true, running: true, conversation_id: conversation.id, started_at: run.startedAt });
 });
 
@@ -148,14 +158,17 @@ router.post('/compact', async (req, res) => {
   }
   const cfg = turnConfig(conversation, {});
   if (!cfg.model) return res.status(400).json({ error: 'No model selected. Set a model in Settings first.' });
-  const result = await compressNow(conversation, cfg);
+  const level = normalizeCompactLevel(req.body?.level);
+  const result = await compressNow(conversation, cfg, () => {}, undefined, level);
   if (result.error) return res.status(502).json({ error: result.error });
   res.json({
     ok: true,
     compressed: !!result.compressed,
     skipped: result.skipped || null,
+    level,
     before_tokens: result.tokensBefore || 0,
-    after_tokens: result.tokensAfter || 0
+    after_tokens: result.tokensAfter || 0,
+    context: contextStatus(conversation, cfg)
   });
 });
 

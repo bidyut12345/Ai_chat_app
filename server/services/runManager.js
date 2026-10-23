@@ -73,7 +73,7 @@ export function isRunning(conversationId) {
  * If one is already in flight for this conversation it is returned untouched so
  * a second tab does not kick off a duplicate turn.
  */
-export function startRun({ conversation, cfg, useTools, extraSystem }) {
+export function startRun({ conversation, cfg, useTools, extraSystem, aiTitle }) {
   const existing = runs.get(conversation.id);
   if (existing && !existing.finished) return existing;
 
@@ -105,7 +105,7 @@ export function startRun({ conversation, cfg, useTools, extraSystem }) {
     }
   };
 
-  runChatTurn({ emit: run.emit, signal: abort.signal, toolControl, conversation, cfg, useTools, extraSystem })
+  runChatTurn({ emit: run.emit, signal: abort.signal, toolControl, conversation, cfg, useTools, extraSystem, aiTitle })
     .catch((e) => {
       // runChatTurn emits its own 'done'; this only fires for setup errors that
       // happen before the loop, so the UI still learns the run ended badly.

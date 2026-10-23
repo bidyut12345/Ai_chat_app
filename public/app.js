@@ -70,6 +70,28 @@ function toast(msg, isError = false) {
   toast._t = setTimeout(() => t.classList.add('hidden'), isError ? 6000 : 2600);
 }
 
+// Copy text to the clipboard. navigator.clipboard only exists in secure
+// contexts (https or localhost), so fall back to a hidden textarea +
+// execCommand for LAN access like http://192.168.x.x:3000.
+async function copyText(text) {
+  const s = String(text || '');
+  if (navigator.clipboard && window.isSecureContext) {
+    try { await navigator.clipboard.writeText(s); return true; } catch { /* fall through */ }
+  }
+  const ta = document.createElement('textarea');
+  ta.value = s;
+  ta.setAttribute('readonly', '');
+  ta.style.position = 'fixed';
+  ta.style.top = '-1000px';
+  ta.style.opacity = '0';
+  document.body.appendChild(ta);
+  ta.select();
+  let ok = false;
+  try { ok = document.execCommand('copy'); } catch { ok = false; }
+  document.body.removeChild(ta);
+  return ok;
+}
+
 /* ───────────────────────── Data loading ───────────────────────── */
 async function loadSettings() {
   state.settings = await api('/settings');
@@ -135,6 +157,16 @@ async function loadMcp() {
 
 function current() {
   return state.conversations.find((c) => c.id === state.currentId) || null;
+}
+
+/** Reflect a new title in the header input and sidebar (used by AI titling). */
+function applyTitle(title) {
+  if (!title) return;
+  const c = current();
+  if (c) c.title = title;
+  const input = $('#chat-title');
+  if (input && document.activeElement !== input) input.value = title;
+  renderConvList();
 }
 
 /* ───────────────────────── Sidebar ───────────────────────── */
@@ -226,6 +258,7 @@ async function openConversation(id) {
   // Switching away must NOT stop the generation — just detach the viewer.
   detachRun();
   setRunningBadge(state.currentId, runningIds.has(state.currentId));
+  lastContext.fresh = false;
   if (isMobile()) toggleSidebar(false);
   state.currentId = id;
   const conv = await api(`/conversations/${id}`);
@@ -240,8 +273,8 @@ async function openConversation(id) {
   renderMessages();
   updateChatSub();
   renderChatOptions();
-  updateContextMeterFromMessages();
-  // A fresh view must not carry a leftover image attachment into a new chat
+  if (conv.context) applyContextStatus(conv.context);
+  else updateContextMeterFromMessages();
   // (the "blank image" that appeared on text-only messages).
   clearAttachments();
   // If this chat is generating, resume watching it live.
@@ -280,33 +313,52 @@ function conversationTokenTotals() {
       for (const r of rounds) {
         processed += r.prompt || 0;
         generated += r.completion || 0;
-        context = Math.max(context, r.prompt || 0);
+        if (r.prompt) context = r.prompt; // latest round, not the historical max
       }
     } else {
       processed += m.prompt_tokens || 0;
       generated += m.completion_tokens || 0;
-      context = Math.max(context, m.prompt_tokens || 0);
+      if (m.prompt_tokens) context = m.prompt_tokens;
     }
   }
   return { processed, generated, context };
 }
 
-// Remember the last context/window pair so switching chats re-renders it.
-let lastContext = { tokens: 0, window: 0 };
+// Remember the last context/window/trigger triple so switching chats re-renders
+// it. `tokens` prefers the LIVE estimate from the server (which shrinks right
+// after a compaction) over the historical "largest prompt so far".
+let lastContext = { tokens: 0, window: 0, trigger: 0, fresh: false };
 
 function updateContextMeterFromMessages() {
   const t = conversationTokenTotals();
   const win = Number(state.settings.context_window) || lastContext.window || 0;
-  lastContext = { tokens: t.context, window: win };
+  // A live server snapshot (chat open / after compaction) is authoritative until
+  // the next real request; otherwise fall back to the latest round's prompt.
+  const tokens = lastContext.fresh && lastContext.tokens ? lastContext.tokens : (t.context || 0);
+  lastContext = { tokens, window: win, trigger: lastContext.trigger || 0, fresh: lastContext.fresh || false };
   renderContextMeter(t, win);
 }
 
 function updateContextMeter(contextTokens, contextWindow) {
   if (contextTokens) lastContext.tokens = contextTokens;
   if (contextWindow) lastContext.window = Number(contextWindow);
+  // A real request just ran — its prompt size is the current truth.
+  lastContext.fresh = true;
   const t = conversationTokenTotals();
   if (contextTokens) t.context = contextTokens;
   renderContextMeter(t, lastContext.window);
+}
+
+// Apply a live context snapshot from the server (chat open or after compact).
+function applyContextStatus(ctx) {
+  if (!ctx) return updateContextMeterFromMessages();
+  lastContext = {
+    tokens: ctx.tokens || 0,
+    window: ctx.window || lastContext.window || 0,
+    trigger: ctx.trigger || 0,
+    fresh: true
+  };
+  renderContextMeter(conversationTokenTotals(), lastContext.window);
 }
 
 function renderContextMeter(totals, window) {
@@ -320,23 +372,40 @@ function renderContextMeter(totals, window) {
   if (totals.processed || totals.generated) {
     bits.push(`Σ ${fmtTokens(totals.processed)} in · ${fmtTokens(totals.generated)} out`);
   }
+  // Prefer the live estimate (updated on open + after compaction); fall back to
+  // the largest prompt the server reported so far.
+  const ctxTok = lastContext.tokens || totals.context || 0;
+  const trig = lastContext.trigger || 0;
   let bar = '';
-  const effKeep = Number(state.settings.context_keep) || 0;
   const winNote = (window > 0 ? `window ${fmtTokens(window)} · ` : '') +
-    (effKeep > 0 ? `sent ≤ ${fmtTokens(effKeep)} recent tokens` : 'no trim');
-  if (window > 0 && totals.context > 0) {
-    const pct = Math.min(100, Math.round((totals.context / window) * 100));
+    (trig > 0 ? `auto-compacts at ${fmtTokens(trig)} (95%)` : 'auto-compact off');
+  if (window > 0 && ctxTok > 0) {
+    const pct = Math.min(100, Math.round((ctxTok / window) * 100));
     const cls = pct >= 90 ? 'ctx-high' : pct >= 70 ? 'ctx-mid' : '';
-    bar = `<span class="ctx-meter ${cls}" title="Context ${totals.context} / ${window} tokens (${pct}%)&#10;${winNote}">` +
+    bar = `<span class="ctx-meter ${cls}" title="Context ${ctxTok.toLocaleString()} / ${window.toLocaleString()} tokens (${pct}%)&#10;${winNote}">` +
       `<span class="ctx-bar"><span class="ctx-fill" style="width:${pct}%"></span></span>` +
-      `${fmtTokens(totals.context)}/${fmtTokens(window)} · ${pct}%</span>`;
-  } else if (totals.context > 0) {
-    bar = `<span class="ctx-meter" title="Tokens in context on the last request&#10;${winNote}">ctx ${fmtTokens(totals.context)}</span>`;
+      `${fmtTokens(ctxTok)}/${fmtTokens(window)} · ${pct}%</span>`;
+  } else if (ctxTok > 0) {
+    bar = `<span class="ctx-meter" title="Tokens in context on the next request&#10;${winNote}">ctx ${fmtTokens(ctxTok)}</span>`;
   } else {
     // Always show a context slot so the bottom info doesn't appear/disappear.
     bar = `<span class="ctx-meter ctx-idle" title="${winNote}">ctx —</span>`;
   }
   el2.innerHTML = bits.map((b) => `<span class="ctx-tok">${b}</span>`).join('') + bar;
+}
+
+// Briefly highlight the context meter green after a compaction so the drop is
+// obvious even if the user isn't watching the number closely.
+function flashContextMeter() {
+  const el2 = $('#hint-tokens');
+  if (!el2) return;
+  const meter = el2.querySelector('.ctx-meter');
+  const target = meter || el2;
+  target.classList.remove('ctx-flash');
+  // Force reflow so the animation can replay on consecutive compactions.
+  void target.offsetWidth;
+  target.classList.add('ctx-flash');
+  setTimeout(() => target.classList.remove('ctx-flash'), 1400);
 }
 
 /**
@@ -348,17 +417,25 @@ async function compactNow() {
   if (!state.currentId) return toast('Open a chat first.', true);
   if (runningIds.has(state.currentId)) return toast('Stop the current generation before compacting.', true);
   const btn = $('#btn-compact');
+  const level = ($('#compact-level') && $('#compact-level').value) || 'auto';
   btn.disabled = true;
+  btn.classList.add('compacting');
   const prev = btn.textContent;
   btn.textContent = '⏳ Compacting…';
   try {
-    const r = await api('/chat/compact', { method: 'POST', body: { conversation_id: state.currentId } });
+    const r = await api('/chat/compact', { method: 'POST', body: { conversation_id: state.currentId, level } });
     if (r.compressed) {
       const b = (r.before_tokens || 0).toLocaleString();
       const a = (r.after_tokens || 0).toLocaleString();
-      toast(`Context compacted: ${b} → ${a} tokens`);
+      const pct = b > 0 ? Math.round((1 - a / b) * 100) : 0;
+      // Update the meter to the live (post-compaction) size and flash it green.
+      if (r.context) applyContextStatus(r.context);
+      flashContextMeter();
+      toast(`⤓ Compacted (${r.level || level}): ${b} → ${a} tokens · ${pct}% smaller`);
     } else if (r.skipped === 'nothing-eligible') {
-      toast('Nothing to compact yet — the recent window already covers the chat.');
+      toast('Nothing to compact yet — the chat is too short to trim at this level.');
+    } else if (r.skipped === 'window-disabled') {
+      toast('Set a context window in Settings before compacting.', true);
     } else {
       toast('Nothing to compact.');
     }
@@ -366,6 +443,7 @@ async function compactNow() {
     toast(e.message || 'Compaction failed.', true);
   } finally {
     btn.disabled = false;
+    btn.classList.remove('compacting');
     btn.textContent = prev;
   }
 }
@@ -459,7 +537,7 @@ function renderMessage(m) {
       el('strong', {}, label),
       el('span', {}, m.created_at ? String(m.created_at).slice(5, 16) : ''),
       el('span', { class: 'msg-actions' },
-        el('button', { title: 'Copy', onclick: () => { navigator.clipboard.writeText(m.content || ''); toast('Copied'); } }, 'copy'),
+        el('button', { title: 'Copy', onclick: async () => { toast((await copyText(m.content || '')) ? 'Copied' : 'Copy failed'); } }, 'copy'),
         m.role === 'assistant' ? el('button', { title: 'Regenerate the last reply', onclick: () => regenerate() }, 'regenerate') : null,
         m.role === 'user' ? el('button', { title: 'Edit & resend', onclick: () => editUserMessage(m) }, 'edit') : null,
         el('button', { title: 'Delete message', onclick: () => deleteMessage(m.id) }, 'delete')
@@ -1354,7 +1432,7 @@ function noteToken(r) {
 function openRunStream(r) {  const url = `/api/chat/stream?conversation_id=${r.conversationId}&last_event_id=${r.lastEventId}`;
   const es = new EventSource(url);
   r.es = es;
-  for (const name of ['delta', 'reasoning', 'notice', 'tool_call', 'tool_result', 'tool_cancelled', 'tool_denied', 'tool_unavailable', 'file_created', 'compressed', 'stats', 'done', 'error', 'resync', 'idle']) {
+  for (const name of ['delta', 'reasoning', 'notice', 'tool_call', 'tool_result', 'tool_cancelled', 'tool_denied', 'tool_unavailable', 'file_created', 'compressed', 'title', 'stats', 'done', 'error', 'resync', 'idle']) {
     es.addEventListener(name, (e) => {
       // Track our cursor so a reconnect resumes in the right place.
       const id = Number(e.lastEventId);
@@ -1429,6 +1507,9 @@ function handleRunEvent(r, event, d) {
     const b = d.before_tokens || 0;
     const a = d.after_tokens || 0;
     r.live.dataset.notice = `Context compressed: ${b.toLocaleString()} → ${a.toLocaleString()} tokens`;
+  } else if (event === 'title') {
+    // AI generated a title for the first turn — update the header + sidebar.
+    applyTitle(d.title);
   } else if (event === 'reasoning') {
     // Reasoning tokens are the first thing a thinking model generates, so they
     // seed the live speed timer and count toward the estimated rate.
@@ -2372,9 +2453,31 @@ function wire() {
 
   $('#chat-title').onchange = async (e) => {
     if (!state.currentId) return;
-    const c = await api(`/conversations/${state.currentId}`, { method: 'PATCH', body: { title: e.target.value } });
+    const val = e.target.value.trim();
+    if (!val) { e.target.value = current()?.title || 'New chat'; return; }
+    const c = await api(`/conversations/${state.currentId}`, { method: 'PATCH', body: { title: val } });
     Object.assign(current(), c);
     renderConvList();
+  };
+
+  // "Generate with AI" — ask the model for a title for the current chat.
+  $('#btn-ai-title').onclick = async () => {
+    if (!state.currentId) return toast('Open a chat first.', true);
+    const btn = $('#btn-ai-title');
+    btn.disabled = true;
+    const prev = btn.textContent;
+    btn.textContent = '⏳…';
+    try {
+      const c = await api(`/conversations/${state.currentId}/generate-title`, { method: 'POST' });
+      Object.assign(current(), c);
+      applyTitle(c.title);
+      toast('Title updated');
+    } catch (err) {
+      toast(err.message || 'Could not generate a title.', true);
+    } finally {
+      btn.disabled = false;
+      btn.textContent = prev;
+    }
   };
 
   $('#sel-prompt').onchange = async (e) => {
@@ -2606,14 +2709,13 @@ function wire() {
   };
 
   // copy code buttons (delegated)
-  document.addEventListener('click', (e) => {
+  document.addEventListener('click', async (e) => {
     const btn = e.target.closest('.code-copy');
     if (!btn) return;
     const code = btn.parentElement.querySelector('code');
-    navigator.clipboard.writeText(code?.textContent || '').then(() => {
-      btn.textContent = 'copied!';
-      setTimeout(() => (btn.textContent = 'copy'), 1200);
-    });
+    await copyText(code?.textContent || '');
+    btn.textContent = 'copied!';
+    setTimeout(() => (btn.textContent = 'copy'), 1200);
   });
 
   // close buttons inside dialogs

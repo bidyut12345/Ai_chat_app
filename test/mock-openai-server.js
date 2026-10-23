@@ -166,6 +166,17 @@ const server = http.createServer(async (req, res) => {
       );
     }
 
+    // Title-generation request (system prompt says "You name conversations").
+    // Return a short title derived from the user's message so auto-titling works.
+    const sysText = (body.messages || []).filter((m) => m.role === 'system').map((m) => m.content).join(' ');
+    if (/name conversations/i.test(sysText)) {
+      const um = [...(body.messages || [])].reverse().find((m) => m.role === 'user');
+      const raw = String(um?.content || '').replace(/^USER MESSAGE:\s*/i, '').split('\n\nREPLY:')[0].trim();
+      const title = raw.replace(/\s+/g, ' ').slice(0, 40).trim() || 'Untitled chat';
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify({ choices: [{ message: { role: 'assistant', content: title } }] }));
+    }
+
     const reply = `You said: "${(lastUser?.content || '').slice(0, 60)}". This is a mock reply from the test server.`;    if (body.stream) {
       res.writeHead(200, { 'Content-Type': 'text/event-stream' });
       // Reasoning arrives before the answer, like llama.cpp / OpenRouter do it.

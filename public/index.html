@@ -57,7 +57,10 @@
       <header id="chat-header">
         <button id="btn-toggle-sidebar" class="icon-btn plain" title="Toggle sidebar">☰</button>
         <div class="chat-title-wrap">
-          <input id="chat-title" class="chat-title" value="New chat" spellcheck="false" />
+          <div class="chat-title-row">
+            <input id="chat-title" class="chat-title" value="New chat" spellcheck="false" />
+            <button type="button" id="btn-ai-title" class="ai-title-btn" title="Generate a title with AI">✨ AI</button>
+          </div>
           <div id="chat-sub" class="chat-sub"></div>
         </div>
         <select id="sel-model" class="model-select" title="Model for this conversation"></select>
@@ -184,7 +187,15 @@
         </form>
         <div class="composer-hint">
           <span id="hint-tools"></span>
-          <button type="button" id="btn-compact" class="ctx-compact-btn" title="Compact older context into a summary now">⤓ Compact</button>
+          <span class="ctx-compact-group" title="Compact older context into a summary now. Choose how much recent context to keep.">
+            <select id="compact-level" class="ctx-compact-level" aria-label="Compact level">
+              <option value="auto" selected>Auto</option>
+              <option value="low">Low</option>
+              <option value="medium">Medium</option>
+              <option value="high">High</option>
+            </select>
+            <button type="button" id="btn-compact" class="ctx-compact-btn">⤓ Compact</button>
+          </span>
           <span id="hint-tokens"></span>
         </div>
       </div>
@@ -252,7 +263,7 @@
             <label class="field">
               <span>Context window (tokens)</span>
               <input id="set-context_window" type="number" min="512" placeholder="e.g. 8192" />
-              <small>Your model's token window — used for the context meter. Leave blank to hide the percentage.</small>
+              <small>Your model's token window. The meter shows usage against it, and context auto-compacts when it reaches <strong>95%</strong>. Leave blank to hide the percentage (then trimming uses the recent-context budget instead).</small>
             </label>
             <label class="field">
               <span>Recent context window (tokens)</span>

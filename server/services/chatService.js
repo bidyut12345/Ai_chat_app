@@ -10,7 +10,7 @@ import { chatCompletion, consumeChatStream, mcpToolsToOpenAi, unavailableToolRes
 import { allTools, callTool } from './mcpManager.js';
 import { isPreApproved, requestApproval, denialResult } from './approvals.js';
 import { toolNeedsApproval, runWithConversation, resolvePath } from './builtin/policy.js';
-import { maybeCompress, trimMessagesInPlace } from './context.js';
+import { maybeCompress, trimMessagesInPlace, generateTitle } from './context.js';
 
 const MAX_TOOL_RESULT_CHARS = 16000;
 
@@ -257,7 +257,15 @@ export function buildMessages(conversationId, { systemPrompt, extraSystem, summa
       continue;
     }
     const m = { role: r.role, content: r.content || '' };
-    if (r.image_url) m.image_url = r.image_url;
+    if (r.image_url) {
+      // OpenAI-compatible vision wants `content` as an array of typed parts, NOT
+      // a top-level image_url field (which most servers silently ignore — the
+      // model then "sees" no image and reaches for file tools to read it).
+      const parts = [];
+      if (r.content) parts.push({ type: 'text', text: r.content });
+      parts.push({ type: 'image_url', image_url: { url: r.image_url } });
+      m.content = parts;
+    }
     if (r.role === 'assistant' && r.tool_calls) {
       const tcs = parseStoredToolCalls(r.tool_calls);
       if (tcs) {
@@ -275,11 +283,11 @@ export function buildMessages(conversationId, { systemPrompt, extraSystem, summa
  * Run one chat turn with the conversation's own tool policy active, so the
  * built-in file and shell tools resolve paths, approvals and scopes per chat.
  */
-export function runChatTurn({ emit, signal, toolControl, conversation, cfg, useTools, extraSystem }) {
-  return runWithConversation(conversation, () => runChatTurnInner({ emit, signal, toolControl, conversation, cfg, useTools, extraSystem }));
+export function runChatTurn({ emit, signal, toolControl, conversation, cfg, useTools, extraSystem, aiTitle }) {
+  return runWithConversation(conversation, () => runChatTurnInner({ emit, signal, toolControl, conversation, cfg, useTools, extraSystem, aiTitle }));
 }
 
-async function runChatTurnInner({ emit, signal, toolControl, conversation, cfg, useTools, extraSystem }) {
+async function runChatTurnInner({ emit, signal, toolControl, conversation, cfg, useTools, extraSystem, aiTitle }) {
   // The upstream request is aborted when the user presses Stop (the run's
   // signal). A browser merely disconnecting does NOT abort — see runManager.
   const abortSignal = signal || new AbortController().signal;
@@ -587,6 +595,22 @@ async function runChatTurnInner({ emit, signal, toolControl, conversation, cfg, 
     rounds: stats.rounds,
     files: producedFiles
   });
+  // AI title for the first turn: generated from the question and applied only
+  // if the chat still carries the placeholder (the user may have renamed it).
+  if (aiTitle) {
+    try {
+      const t = await generateTitle(conversation, cfg, { question: aiTitle, answer: finalContent, signal: abortSignal });
+      if (t) {
+        const cur = db.prepare('SELECT title FROM conversations WHERE id = ?').get(conversation.id);
+        const ph = aiTitle.replace(/\s+/g, ' ').trim();
+        const phTrunc = ph.length > 48 ? `${ph.slice(0, 48).trimEnd()}…` : ph;
+        if (!cur || cur.title === 'New chat' || cur.title === phTrunc) {
+          db.prepare('UPDATE conversations SET title = ? WHERE id = ?').run(t, conversation.id);
+          emit('title', { conversation_id: conversation.id, title: t });
+        }
+      }
+    } catch { /* best-effort: keep the placeholder title */ }
+  }
   emit('done', { message: saved, error: finalError });
   return saved;
 }

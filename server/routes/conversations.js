@@ -2,7 +2,9 @@ import { Router } from 'express';
 import fs from 'node:fs';
 import path from 'node:path';
 import { db, DEFAULT_WORKDIR, POLICY_DEFAULTS, aitempRoot } from '../db.js';
-import { normalizeEffort } from '../services/openai.js';
+import { normalizeEffort, runtimeConfig } from '../services/openai.js';
+import { generateTitle, contextStatus } from '../services/context.js';
+import { loadConversation } from '../services/chatService.js';
 
 const router = Router();
 
@@ -128,7 +130,9 @@ router.get('/:id', (req, res) => {
   const conv = ownedConv(req, req.params.id);
   if (!conv) return res.status(404).json({ error: 'conversation not found' });
   const messages = db.prepare('SELECT * FROM messages WHERE conversation_id = ? ORDER BY id').all(conv.id);
-  res.json({ ...withPrompt(conv), messages });
+  const full = loadConversation(conv.id);
+  const ctx = contextStatus(full, runtimeConfig({}));
+  res.json({ ...withPrompt(conv), messages, context: ctx });
 });
 
 // PATCH /api/conversations/:id { title?, prompt_id?, model?, image_url?, workdir?, approval_mode?,
@@ -168,6 +172,32 @@ router.patch('/:id', (req, res) => {
 
   db.prepare(`UPDATE conversations SET ${sets.join(', ')} WHERE id = ?`).run(...params, id);
   res.json(withPrompt(db.prepare('SELECT * FROM conversations WHERE id = ?').get(id)));
+});
+
+// POST /api/conversations/:id/generate-title
+// Ask the model for a short title from the conversation's first exchange and
+// save it. Ignores the current title (explicit user action = always overwrite).
+router.post('/:id/generate-title', async (req, res) => {
+  const conv = ownedConv(req, req.params.id);
+  if (!conv) return res.status(404).json({ error: 'conversation not found' });
+  const full = loadConversation(conv.id);
+  const cfg = runtimeConfig({});
+  if (full.model) cfg.model = full.model;
+  if (full.reasoning_effort) cfg.reasoningEffort = full.reasoning_effort;
+  if (!cfg.model) return res.status(400).json({ error: 'No model selected. Set a model in Settings first.' });
+
+  // Use the first user message and the assistant reply after it (if any).
+  const first = db
+    .prepare("SELECT role, content FROM messages WHERE conversation_id = ? AND role IN ('user','assistant') AND content != '' ORDER BY id LIMIT 2")
+    .all(conv.id);
+  const question = first.find((m) => m.role === 'user')?.content || '';
+  const answer = first.find((m) => m.role === 'assistant')?.content || '';
+  if (!question.trim()) return res.status(400).json({ error: 'Nothing to title yet — send a message first.' });
+
+  const title = await generateTitle(full, cfg, { question, answer });
+  if (!title) return res.status(502).json({ error: 'The model did not return a usable title.' });
+  db.prepare("UPDATE conversations SET title = ?, updated_at = datetime('now') WHERE id = ?").run(title, conv.id);
+  res.json(withPrompt(db.prepare('SELECT * FROM conversations WHERE id = ?').get(conv.id)));
 });
 
 // DELETE /api/conversations/:id
