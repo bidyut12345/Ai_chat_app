@@ -1,4 +1,4 @@
-﻿/**
+/**
  * Built-in MCP server: `files` (file management).
  *
  * Every path goes through policy.resolvePath(), so the restricted/full access
@@ -37,12 +37,17 @@ function globToRegExp(glob) {
   return new RegExp(`^${out}$`, 'i');
 }
 
+const IGNORED_DIRS = new Set([
+  'node_modules', '.git', 'dist', 'build', '.next', 'coverage', '.cache',
+  'venv', '.venv', '__pycache__', '.turbo', '.parcel-cache'
+]);
+
 async function* walk(dir, recursive) {
   const entries = await fsp.readdir(dir, { withFileTypes: true });
   for (const e of entries) {
     const full = path.join(dir, e.name);
     yield { entry: e, full };
-    if (recursive && e.isDirectory() && !['node_modules', '.git'].includes(e.name)) {
+    if (recursive && e.isDirectory() && !IGNORED_DIRS.has(e.name)) {
       yield* walk(full, true);
     }
   }
@@ -143,6 +148,39 @@ export const fileTools = [
       if (args.append) return `Appended ${fmtBytes(Buffer.byteLength(content))} to ${file}`;
       await fsp.writeFile(file, content, 'utf8');
       return `Wrote ${fmtBytes(Buffer.byteLength(content))} to ${file}`;
+    }
+  },
+
+  {
+    name: 'edit_file',
+    destructive: true,
+    description: 'Replace an exact target snippet in an existing text file with replacement text. Ideal for surgical updates without rewriting the whole file.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'File to edit.' },
+        target: { type: 'string', description: 'Exact text snippet to be replaced.' },
+        replacement: { type: 'string', description: 'New text to replace the target snippet with.' },
+        allow_multiple: { type: 'boolean', description: 'If true, replaces all occurrences. Default false (must match uniquely).' }
+      },
+      required: ['path', 'target', 'replacement']
+    },
+    async handler(args) {
+      const file = resolvePath(str(args.path), { mustExist: true });
+      const target = typeof args.target === 'string' ? args.target : '';
+      if (!target) throw new PolicyError('target snippet cannot be empty');
+      const replacement = typeof args.replacement === 'string' ? args.replacement : '';
+      const text = await fsp.readFile(file, 'utf8');
+      if (!text.includes(target)) {
+        throw new PolicyError(`Target snippet not found in ${file}. Make sure the target text matches the file content exactly.`);
+      }
+      const count = text.split(target).length - 1;
+      if (!args.allow_multiple && count > 1) {
+        throw new PolicyError(`Target snippet occurs ${count} times in ${file}. Provide more surrounding context to match uniquely, or set allow_multiple: true.`);
+      }
+      const updated = args.allow_multiple ? text.replaceAll(target, replacement) : text.replace(target, replacement);
+      await fsp.writeFile(file, updated, 'utf8');
+      return `Successfully replaced ${count} occurrence(s) in ${file}`;
     }
   },
 

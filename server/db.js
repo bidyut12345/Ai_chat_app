@@ -16,6 +16,9 @@ fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
 export const db = new Database(DB_PATH);
 db.pragma('journal_mode = WAL');
 db.pragma('foreign_keys = ON');
+db.pragma('busy_timeout = 5000');
+db.pragma('synchronous = NORMAL');
+db.pragma('temp_store = MEMORY');
 
 // Every conversation carries its own tool policy; new chats start here.
 export const DEFAULT_WORKDIR = os.homedir();

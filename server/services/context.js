@@ -102,10 +102,51 @@ function clampToGroup(conversationId, summarizeUpTo) {
   return cut;
 }
 
+/**
+ * Prune bulky payload arguments from completed write and edit tool calls.
+ * The file is already on disk, so keeping 20,000 characters of written file
+ * contents in every replayed prompt wastes tokens and busts the context budget.
+ */
+export function pruneToolCallPayload(tc) {
+  if (!tc || !tc.function || typeof tc.function.arguments !== 'string') return tc;
+  const name = tc.function.name;
+  if (name !== 'files__write_file' && name !== 'files__edit_file') return tc;
+  try {
+    const parsed = JSON.parse(tc.function.arguments);
+    let changed = false;
+    if (parsed && typeof parsed.content === 'string' && parsed.content.length > 200) {
+      parsed.content = `[file written: ${parsed.content.length} chars]`;
+      changed = true;
+    }
+    if (parsed && typeof parsed.replacement === 'string' && parsed.replacement.length > 200) {
+      parsed.replacement = `[replaced snippet: ${parsed.replacement.length} chars]`;
+      changed = true;
+    }
+    if (changed) {
+      return {
+        ...tc,
+        function: {
+          ...tc.function,
+          arguments: JSON.stringify(parsed)
+        }
+      };
+    }
+  } catch {}
+  return tc;
+}
+
 function rowToMessage(r) {
   if (r.role === 'tool') return { role: 'tool', tool_call_id: r.tool_call_id, content: r.content || '' };
   const m = { role: r.role, content: r.content || '' };
-  if (r.tool_calls) m.tool_calls = r.tool_calls;
+  if (r.tool_calls) {
+    try {
+      const tcs = typeof r.tool_calls === 'string' ? JSON.parse(r.tool_calls) : r.tool_calls;
+      if (Array.isArray(tcs)) m.tool_calls = tcs.map(pruneToolCallPayload);
+      else m.tool_calls = r.tool_calls;
+    } catch {
+      m.tool_calls = r.tool_calls;
+    }
+  }
   return m;
 }
 
@@ -395,10 +436,24 @@ export function trimMessagesInPlace(messages, keepTokens) {
       acc += size;
       continue;
     }
-    // Over budget. Elide bulky tool-result bodies; leave short/structural msgs.
+    // Over budget. Elide bulky tool-result bodies and bulky assistant content; leave short/structural msgs.
     if (m.role === 'tool' && typeof m.content === 'string' && m.content.length > TRIMMED_TOOL_NOTE.length) {
       m.content = TRIMMED_TOOL_NOTE;
       changed = true;
+    } else if (m.role === 'assistant') {
+      if (typeof m.content === 'string' && m.content.length > 500) {
+        m.content = `${m.content.slice(0, 300)}\n…[earlier assistant explanation trimmed to fit context budget]`;
+        changed = true;
+      }
+      if (Array.isArray(m.tool_calls)) {
+        for (let j = 0; j < m.tool_calls.length; j++) {
+          const pruned = pruneToolCallPayload(m.tool_calls[j]);
+          if (pruned !== m.tool_calls[j]) {
+            m.tool_calls[j] = pruned;
+            changed = true;
+          }
+        }
+      }
     }
   }
   return changed;
@@ -418,7 +473,13 @@ function currentPromptTokens(conversation, summarizedUpto) {
     const m = { role: r.role, content: r.content || '' };
     if (r.image_url) m.image_url = r.image_url;
     if (r.role === 'assistant' && r.tool_calls) {
-      try { const tcs = typeof r.tool_calls === 'string' ? JSON.parse(r.tool_calls) : r.tool_calls; if (Array.isArray(tcs)) { m.tool_calls = tcs; for (const t of tcs) liveIds.add(t.id); } } catch { /* ignore */ }
+      try {
+        const tcs = typeof r.tool_calls === 'string' ? JSON.parse(r.tool_calls) : r.tool_calls;
+        if (Array.isArray(tcs)) {
+          m.tool_calls = tcs.map(pruneToolCallPayload);
+          for (const t of tcs) liveIds.add(t.id);
+        }
+      } catch { /* ignore */ }
     }
     msgs.push(m);
   }

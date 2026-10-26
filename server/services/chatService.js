@@ -10,9 +10,9 @@ import { chatCompletion, consumeChatStream, mcpToolsToOpenAi, unavailableToolRes
 import { allTools, callTool } from './mcpManager.js';
 import { isPreApproved, requestApproval, denialResult } from './approvals.js';
 import { toolNeedsApproval, runWithConversation, resolvePath } from './builtin/policy.js';
-import { maybeCompress, trimMessagesInPlace, generateTitle } from './context.js';
+import { maybeCompress, trimMessagesInPlace, generateTitle, pruneToolCallPayload } from './context.js';
 
-const MAX_TOOL_RESULT_CHARS = 16000;
+const MAX_TOOL_RESULT_CHARS = 8000;
 
 /**
  * Text handed back to the model when the user cancels a running tool call.
@@ -27,6 +27,7 @@ function cancelledToolResult(name) {
 /** Tools that leave a file behind, and which argument names the result. */
 const PRODUCING_TOOLS = {
   'files__write_file': 'path',
+  'files__edit_file': 'path',
   'files__create_directory': 'path',
   'files__copy_path': 'to',
   'files__move_path': 'to'
@@ -269,7 +270,7 @@ export function buildMessages(conversationId, { systemPrompt, extraSystem, summa
     if (r.role === 'assistant' && r.tool_calls) {
       const tcs = parseStoredToolCalls(r.tool_calls);
       if (tcs) {
-        m.tool_calls = tcs;
+        m.tool_calls = tcs.map(pruneToolCallPayload);
         for (const tc of tcs) liveIds.add(tc.id);
       }
     }
@@ -537,6 +538,19 @@ async function runChatTurnInner({ emit, signal, toolControl, conversation, cfg, 
       segments: JSON.stringify(roundSegs),
       files: roundFiles.length ? JSON.stringify(roundFiles) : null
     });
+
+    // Prune bulky write/edit payloads from completed tool calls in `messages`
+    // so subsequent rounds do not resend whole files, keeping prefix stable for KV caching.
+    for (const m of messages) {
+      if (m.role === 'assistant' && Array.isArray(m.tool_calls)) {
+        m.tool_calls = m.tool_calls.map(pruneToolCallPayload);
+      }
+    }
+
+    if (round > 0 && round % 15 === 0) {
+      // Periodically trim older rounds to avoid runaway single-turn bloat
+      trimMessagesInPlace(messages, cfg.contextKeep);
+    }
 
     if (round === maxRounds - 1) {
       finalContent = assistant.content || '';

@@ -261,6 +261,7 @@ async function openConversation(id) {
   lastContext.fresh = false;
   if (isMobile()) toggleSidebar(false);
   state.currentId = id;
+  showAllMessages = false;
   const conv = await api(`/conversations/${id}`);
   state.messages = conv.messages || [];
   const c = current();
@@ -501,6 +502,9 @@ async function setChatOption(patch) {
   }
 }
 
+let showAllMessages = false;
+const INITIAL_MSG_LIMIT = 50;
+
 function renderMessages() {
   const box = $('#messages');
   box.innerHTML = '';
@@ -510,7 +514,22 @@ function renderMessages() {
     $('#empty-state').classList.remove('hidden');
     return;
   }
-  for (const m of state.messages) box.append(renderMessage(m));
+  const msgs = state.messages;
+  if (!showAllMessages && msgs.length > INITIAL_MSG_LIMIT) {
+    const hiddenCount = msgs.length - INITIAL_MSG_LIMIT;
+    const banner = el('div', { class: 'load-earlier-banner', style: 'text-align:center; padding:12px; margin-bottom:12px;' },
+      el('button', {
+        class: 'btn btn-sm',
+        onclick: () => { showAllMessages = true; renderMessages(); }
+      }, `📜 Load ${hiddenCount} earlier messages (${msgs.length} total)`)
+    );
+    box.append(banner);
+    for (let i = hiddenCount; i < msgs.length; i++) {
+      box.append(renderMessage(msgs[i]));
+    }
+  } else {
+    for (const m of msgs) box.append(renderMessage(m));
+  }
   scrollBottom();
 }
 

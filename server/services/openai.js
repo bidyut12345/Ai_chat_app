@@ -50,7 +50,7 @@ function intOrUndef(v) {
 }
 
 function headers(apiKey) {
-  const h = { 'Content-Type': 'application/json' };
+  const h = { 'Content-Type': 'application/json', 'Connection': 'keep-alive' };
   if (apiKey) h.Authorization = `Bearer ${apiKey}`;
   return h;
 }

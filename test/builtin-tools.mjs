@@ -1,4 +1,4 @@
-﻿/**
+/**
  * End-to-end checks for the built-in `files` and `shell` MCP servers and the
  * tool-approval flow. Run with: node test/builtin-tools.mjs
  *
@@ -172,7 +172,7 @@ async function main() {
   const shell = mcp.find((s) => s.builtin_key === 'shell');
   check('files server is built in and connected', files?.builtin === true && files?.status === 'connected');
   check('shell server is built in and connected', shell?.builtin === true && shell?.status === 'connected');
-  check('files exposes 10 tools', files?.tools?.length === 10, `got ${files?.tools?.length}`);
+  check('files exposes 11 tools', files?.tools?.length === 11, `got ${files?.tools?.length}`);
   check('shell exposes 6 tools', shell?.tools?.length === 6, `got ${shell?.tools?.length}`);
   check('read-only tools are annotated', files.tools.every((t) => ['list_directory', 'read_file', 'file_info', 'search_files', 'search_text'].includes(t.name) === (t.annotations?.readOnlyHint === true)));
 
@@ -190,6 +190,10 @@ async function main() {
   check('list_directory sees the workspace', ls.data?.result?.includes('notes.txt'), ls.data?.result);
   const rd = await callTool(files, 'read_file', { path: 'notes.txt' });
   check('read_file returns numbered lines', rd.data?.result?.includes('2: bravo'), rd.data?.result);
+  const ed = await callTool(files, 'edit_file', { path: 'notes.txt', target: 'bravo', replacement: 'bravo-edited' });
+  check('edit_file surgically replaces snippet', ed.data?.result?.includes('Successfully replaced 1 occurrence'), ed.data?.result);
+  const rd2 = await callTool(files, 'read_file', { path: 'notes.txt' });
+  check('read_file reflects edit_file changes', rd2.data?.result?.includes('2: bravo-edited'), rd2.data?.result);
   const st = await callTool(shell, 'run_command', { command: 'echo builtin-ok' });
   check('run_command executes and captures stdout', st.data?.result?.includes('builtin-ok') && st.data?.result?.includes('exit: 0'), st.data?.result);
   const esc = await callTool(files, 'read_file', { path: path.join(os.tmpdir(), '..', 'etc', 'passwd') });
