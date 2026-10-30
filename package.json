@@ -7,9 +7,12 @@
   "scripts": {
     "start": "node server/index.js",
     "dev": "node --watch server/index.js",
-    "test": "node test/e2e.mjs && node test/builtin-tools.mjs",
+    "test": "node test/e2e.mjs && node test/builtin-tools.mjs && node test/auth.mjs && node test/context-compress.mjs && node test/automation.mjs",
     "test:e2e": "node test/e2e.mjs",
-    "test:builtin": "node test/builtin-tools.mjs"
+    "test:builtin": "node test/builtin-tools.mjs",
+    "test:auth": "node test/auth.mjs",
+    "test:context": "node test/context-compress.mjs",
+    "test:automation": "node test/automation.mjs"
   },
   "engines": {
     "node": ">=22"

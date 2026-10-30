@@ -11,7 +11,7 @@ import chatRouter from './routes/chat.js';
 import mcpRouter from './routes/mcp.js';
 import approvalsRouter from './routes/approvals.js';
 import authRouter from './routes/auth.js';
-import { attachUser, requireAuth } from './services/auth.js';
+import { attachUser, requireAuth, requireAdmin } from './services/auth.js';
 import { connectAll, stopAll } from './services/mcpManager.js';
 import { BUILTIN_SERVERS } from './services/builtin/index.js';
 import { denyAll } from './services/approvals.js';
@@ -49,7 +49,9 @@ app.use('/api/settings', settingsRouter);
 app.use('/api/prompts', promptsRouter);
 app.use('/api/conversations', conversationsRouter);
 app.use('/api/conversations/:id(\\d+)/fs', conversationFsRouter);
-app.use('/api/fs', fsRouter);
+// Server-wide disk browsing/creation can reach any folder on the host, so it is
+// limited to admins. The per-chat file manager above stays available to users.
+app.use('/api/fs', requireAdmin, fsRouter);
 app.use('/api/chat', chatRouter);
 app.use('/api/mcp', mcpRouter);
 app.use('/api/approvals', approvalsRouter);

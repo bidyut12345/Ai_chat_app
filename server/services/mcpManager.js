@@ -15,7 +15,7 @@ import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/
 import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js';
 import { db } from '../db.js';
 import { createBuiltinTransport, stopAllBuiltin } from './builtin/index.js';
-import { normalizePolicy } from './builtin/policy.js';
+import { normalizePolicy, serverEnabled } from './builtin/policy.js';
 
 const runtime = new Map(); // name -> { client, tools, status, error }
 
@@ -135,7 +135,12 @@ export async function connectAll() {
   return results;
 }
 
-export function statusList() {
+/**
+ * Configured servers with live status. `env` and `headers` often hold API
+ * tokens, so they are only included for admins (the MCP editor is admin-only).
+ * Everyone else still gets the list, because the per-chat tool menu needs it.
+ */
+export function statusList({ includeSecrets = false } = {}) {
   const rows = db.prepare('SELECT * FROM mcp_servers ORDER BY name').all();
   return rows.map((r) => {
     const entry = runtime.get(r.name);
@@ -150,8 +155,8 @@ export function statusList() {
       command: r.command || '',
       args: parseJson(r.args, []) || [],
       url: r.url || '',
-      env: parseJson(r.env, {}) || {},
-      headers: parseJson(r.headers, {}) || {},
+      env: includeSecrets ? parseJson(r.env, {}) || {} : {},
+      headers: includeSecrets ? parseJson(r.headers, {}) || {} : {},
       status: !r.enabled ? 'disabled' : entry ? entry.status : 'disconnected',
       error: entry?.error || null,
       tools: entry?.tools || []
@@ -168,6 +173,7 @@ export function allTools(conversation) {
   const out = [];
   for (const entry of runtime.values()) {
     if (entry.status !== 'connected') continue;
+    if (policy && policy.disabledServers.has(entry.name)) continue;
     if (policy && entry.builtinKey === 'files' && !policy.filesEnabled) continue;
     if (policy && entry.builtinKey === 'shell' && !policy.shellEnabled) continue;
     for (const t of entry.tools) {
@@ -199,6 +205,11 @@ export async function callTool(qualifiedName, args, timeoutMs = 60000, signal = 
   if (!entry || entry.status !== 'connected' || !entry.client) {
     throw new Error(`MCP server "${server}" is not connected`);
   }
+  // A chat can switch a server off: never run a tool it should not see, even
+  // if the model echoes a name from an earlier turn.
+  if (!serverEnabled(server)) {
+    throw new Error(`MCP server "${server}" is disabled for this chat`);
+  }
   if (signal?.aborted) { const e = new Error('cancelled'); e.name = 'AbortError'; throw e; }
   // SDK signature: callTool(params, resultSchema = CallToolResultSchema, options)
   const opts = signal ? { signal } : undefined;
@@ -210,11 +221,23 @@ export async function callTool(qualifiedName, args, timeoutMs = 60000, signal = 
         const e = new Error('cancelled'); e.name = 'AbortError'; rej(e);
       }, { once: true }))
     : null;
+  // Race losers must not surface as unhandled rejections once the call settles.
+  abortP?.catch(() => {});
   const racers = [call];
   if (abortP) racers.push(abortP);
-  if (!entry.builtin) racers.push(new Promise((_, rej) => setTimeout(() => rej(new Error(`Tool call "${qualifiedName}" timed out`)), timeoutMs)));
-  const res = await Promise.race(racers);
-  return normalizeToolResult(res);
+  let timer = null;
+  if (!entry.builtin) {
+    racers.push(new Promise((_, rej) => {
+      timer = setTimeout(() => rej(new Error(`Tool call "${qualifiedName}" timed out`)), timeoutMs);
+      timer.unref?.();
+    }));
+  }
+  try {
+    const res = await Promise.race(racers);
+    return normalizeToolResult(res);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 
 function normalizeToolResult(res) {

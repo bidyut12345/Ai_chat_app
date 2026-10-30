@@ -73,7 +73,7 @@ export function isRunning(conversationId) {
  * If one is already in flight for this conversation it is returned untouched so
  * a second tab does not kick off a duplicate turn.
  */
-export function startRun({ conversation, cfg, useTools, extraSystem, aiTitle }) {
+export function startRun({ conversation, cfg, useTools, extraSystem, aiTitle, turnMessageId }) {
   const existing = runs.get(conversation.id);
   if (existing && !existing.finished) return existing;
 
@@ -105,7 +105,7 @@ export function startRun({ conversation, cfg, useTools, extraSystem, aiTitle }) 
     }
   };
 
-  runChatTurn({ emit: run.emit, signal: abort.signal, toolControl, conversation, cfg, useTools, extraSystem, aiTitle })
+  runChatTurn({ emit: run.emit, signal: abort.signal, toolControl, conversation, cfg, useTools, extraSystem, aiTitle, turnMessageId })
     .catch((e) => {
       // runChatTurn emits its own 'done'; this only fires for setup errors that
       // happen before the loop, so the UI still learns the run ended badly.
@@ -170,13 +170,25 @@ export function subscribe(conversationId, lastEventId, res) {
   const run = runs.get(Number(conversationId));
   if (!run) return false;
 
+  // Announce where the replay ends before sending it. A reconnecting client
+  // receives the whole backlog in one burst, so it needs to know which events
+  // are history (and when the run really started) to avoid reporting a
+  // nonsensical generation speed. `seq` is the last buffered event id.
+  try {
+    res.write(`event: hello\ndata: ${JSON.stringify({ seq: run.seq, started_at: run.startedAt })}\n\n`);
+  } catch {
+    return false;
+  }
+
   const oldest = run.events.length ? run.events[0].id : run.seq + 1;
   const from = Number(lastEventId) || 0;
-  // If the client's cursor is older than what we still hold, tell it to reload
-  // the finished/partial state from the database instead of replaying a gap.
-  if (from > 0 && from < oldest - 1) {
+  // If the client's cursor (or a fresh attach at 0) is older than what we still
+  // hold, tell it to reload the finished/partial state from the database
+  // instead of replaying a gap. `oldest` lets the client reattach right after
+  // the retained window rather than starting over.
+  if (oldest > 1 && from < oldest - 1) {
     try {
-      res.write(`event: resync\ndata: ${JSON.stringify({ reason: 'buffer_trimmed' })}\n\n`);
+      res.write(`event: resync\ndata: ${JSON.stringify({ reason: 'buffer_trimmed', oldest })}\n\n`);
     } catch {
       /* ignore */
     }

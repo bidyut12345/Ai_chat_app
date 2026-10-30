@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { db } from '../db.js';
 import * as mcp from '../services/mcpManager.js';
 import { runWithPolicy } from '../services/builtin/policy.js';
+import { requireAdmin } from '../services/auth.js';
 
 const router = Router();
 
@@ -43,24 +44,28 @@ function shape(row) {
   };
 }
 
-// GET /api/mcp -> configured servers with live status + discovered tools
+// GET /api/mcp -> configured servers with live status + discovered tools.
+// Any signed-in user may read the list (the per-chat tool menu needs it), but
+// env/headers are only included for admins.
 router.get('/', (req, res) => {
-  res.json(mcp.statusList());
+  res.json(mcp.statusList({ includeSecrets: !!req.user.is_admin }));
 });
 
 // POST /api/mcp/tools/refresh -> reconnect all enabled servers and return tools
-router.post('/tools/refresh', async (req, res) => {
+router.post('/tools/refresh', requireAdmin, async (req, res) => {
   const results = await mcp.connectAll();
   res.json({ results, tools: mcp.allTools() });
 });
 
 // POST /api/mcp/connect-all
-router.post('/connect-all', async (req, res) => {
+router.post('/connect-all', requireAdmin, async (req, res) => {
   res.json({ results: await mcp.connectAll() });
 });
 
 // POST /api/mcp { name, transport, command, args[], url, headers{}, env{}, enabled }
-router.post('/', async (req, res) => {
+// NOTE: stdio servers run arbitrary commands on this host, so every mutation
+// below is admin-only.
+router.post('/', requireAdmin, async (req, res) => {
   const b = req.body || {};
   const name = String(b.name || '').trim();
   const transport = String(b.transport || 'stdio').toLowerCase();
@@ -111,8 +116,8 @@ router.post('/', async (req, res) => {
   }
 });
 
-// PUT /api/mcp/:id  (updates and reconnects)
-router.put('/:id', async (req, res) => {
+// PUT /api/mcp/:id  (updates and reconnects)  (admin)
+router.put('/:id', requireAdmin, async (req, res) => {
   const id = Number(req.params.id);
   const row = db.prepare('SELECT * FROM mcp_servers WHERE id = ?').get(id);
   if (!row) return res.status(404).json({ error: 'mcp server not found' });
@@ -174,7 +179,7 @@ router.put('/:id', async (req, res) => {
 });
 
 // POST /api/mcp/:id/connect
-router.post('/:id/connect', async (req, res) => {
+router.post('/:id/connect', requireAdmin, async (req, res) => {
   const row = db.prepare('SELECT * FROM mcp_servers WHERE id = ?').get(Number(req.params.id));
   if (!row) return res.status(404).json({ error: 'mcp server not found' });
   try {
@@ -186,28 +191,28 @@ router.post('/:id/connect', async (req, res) => {
 });
 
 // POST /api/mcp/:id/disconnect
-router.post('/:id/disconnect', async (req, res) => {
+router.post('/:id/disconnect', requireAdmin, async (req, res) => {
   await mcp.disconnectServer(db.prepare('SELECT name FROM mcp_servers WHERE id = ?').get(Number(req.params.id))?.name);
   res.json({ ok: true });
 });
 
-// POST /api/mcp/:id/tools  -> re-list tools
-router.post('/:id/tools', async (req, res) => {
+// POST /api/mcp/:id/tools  -> re-list tools  (admin)
+router.post('/:id/tools', requireAdmin, async (req, res) => {
   const row = db.prepare('SELECT * FROM mcp_servers WHERE id = ?').get(Number(req.params.id));
   if (!row) return res.status(404).json({ error: 'mcp server not found' });
   try {
     await mcp.connectServer(row);
-    const entry = mcp.statusList().find((s) => s.name === row.name);
+    const entry = mcp.statusList({ includeSecrets: true }).find((s) => s.name === row.name);
     res.json({ tools: entry?.tools || [] });
   } catch (e) {
     res.status(502).json({ error: e.message });
   }
 });
 
-// POST /api/mcp/:id/call { tool, arguments, policy? } -> direct test call.
+// POST /api/mcp/:id/call { tool, arguments, policy? } -> direct test call  (admin).
 // `policy` optionally scopes the call the way a chat would:
 // { workdir, file_access, shell_access, approval_mode }.
-router.post('/:id/call', async (req, res) => {
+router.post('/:id/call', requireAdmin, async (req, res) => {
   const row = db.prepare('SELECT * FROM mcp_servers WHERE id = ?').get(Number(req.params.id));
   if (!row) return res.status(404).json({ error: 'mcp servers not found' });
   const tool = String(req.body?.tool || '');
@@ -225,8 +230,8 @@ router.post('/:id/call', async (req, res) => {
   }
 });
 
-// DELETE /api/mcp/:id
-router.delete('/:id', async (req, res) => {
+// DELETE /api/mcp/:id  (admin)
+router.delete('/:id', requireAdmin, async (req, res) => {
   const row = db.prepare('SELECT * FROM mcp_servers WHERE id = ?').get(Number(req.params.id));
   if (!row) return res.status(404).json({ error: 'mcp server not found' });
   if (isProtected(row)) {

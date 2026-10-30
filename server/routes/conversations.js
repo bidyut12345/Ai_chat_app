@@ -17,7 +17,8 @@ const POLICY_COLUMNS = [
   'file_access',
   'shell_access',
   'files_enabled',
-  'shell_enabled'
+  'shell_enabled',
+  'mcp_disabled'
 ];
 
 /**
@@ -52,6 +53,29 @@ function policyFromBody(body, base) {
   for (const key of ['files_enabled', 'shell_enabled']) {
     if (body[key] !== undefined) out[key] = body[key] ? 1 : 0;
   }
+  if (body.mcp_disabled !== undefined) {
+    const raw = body.mcp_disabled;
+    let list = [];
+    if (raw !== null && raw !== '') {
+      if (Array.isArray(raw)) {
+        list = raw;
+      } else if (typeof raw === 'string') {
+        try {
+          list = JSON.parse(raw);
+        } catch {
+          return { error: 'mcp_disabled must be an array of MCP server names' };
+        }
+        if (!Array.isArray(list)) return { error: 'mcp_disabled must be an array of MCP server names' };
+      } else {
+        return { error: 'mcp_disabled must be an array of MCP server names' };
+      }
+    }
+    const names = [...new Set(list.map((n) => String(n ?? '').trim()).filter(Boolean))];
+    const known = new Set(db.prepare('SELECT name FROM mcp_servers').all().map((r) => r.name));
+    const unknown = names.find((n) => !known.has(n));
+    if (unknown) return { error: `Unknown MCP server: ${unknown}` };
+    out.mcp_disabled = names.length ? JSON.stringify(names) : null;
+  }
   return { values: out };
 }
 
@@ -68,13 +92,27 @@ function withPrompt(conv) {
   return { ...conv, prompt_name: prompt?.name || null };
 }
 
+/** Parse a JSON-array column (messages.files) without throwing on bad data. */
+function jsonArray(raw) {
+  if (!raw) return [];
+  try {
+    const v = typeof raw === 'string' ? JSON.parse(raw) : raw;
+    return Array.isArray(v) ? v : [];
+  } catch {
+    return [];
+  }
+}
+
 // GET /api/conversations
 router.get('/', (req, res) => {
   const rows = db
     .prepare(
       `SELECT c.*,
               (SELECT COUNT(*) FROM messages m WHERE m.conversation_id = c.id) AS message_count,
-              (SELECT substr(replace(coalesce((SELECT m.content FROM messages m WHERE m.conversation_id = c.id ORDER BY m.id DESC LIMIT 1), ''), char(10), ' '), 1, 120) AS preview
+              (SELECT substr(replace(coalesce(
+                        nullif((SELECT m.content FROM messages m WHERE m.conversation_id = c.id ORDER BY m.id DESC LIMIT 1), ''),
+                        (SELECT m.error FROM messages m WHERE m.conversation_id = c.id AND m.error IS NOT NULL ORDER BY m.id DESC LIMIT 1),
+                        ''), char(10), ' '), 1, 120) AS preview
         ) AS preview
        FROM conversations c
        WHERE c.user_id = ?
@@ -90,12 +128,15 @@ router.post('/', (req, res) => {
   const { title, prompt_id, model, image_url } = req.body || {};
   const { values, error } = policyFromBody(req.body || {}, { ...POLICY_DEFAULTS, workdir: DEFAULT_WORKDIR });
   if (error) return res.status(400).json({ error });
+  if (prompt_id != null && prompt_id !== '' && !promptExists(prompt_id)) {
+    return res.status(400).json({ error: 'prompt_id does not exist' });
+  }
   const explicitWorkdir = String(req.body?.workdir || '').trim() !== '';
   const info = db
     .prepare(
       `INSERT INTO conversations
-        (title, prompt_id, model, image_url, workdir, approval_mode, file_access, shell_access, files_enabled, shell_enabled, reasoning_effort, user_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        (title, prompt_id, model, image_url, workdir, approval_mode, file_access, shell_access, files_enabled, shell_enabled, mcp_disabled, reasoning_effort, user_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
       title && String(title).trim() ? String(title).trim() : 'New chat',
@@ -108,6 +149,7 @@ router.post('/', (req, res) => {
       values.shell_access,
       values.files_enabled,
       values.shell_enabled,
+      values.mcp_disabled ?? null,
       normalizeEffort(req.body?.reasoning_effort),
       req.user.id
     );
@@ -135,6 +177,88 @@ router.get('/:id', (req, res) => {
   res.json({ ...withPrompt(conv), messages, context: ctx });
 });
 
+// GET /api/conversations/:id/export?format=md|json
+// Download the transcript as Markdown (default) or raw JSON. Ownership-checked
+// like every other conversation route.
+router.get('/:id/export', (req, res) => {
+  const conv = ownedConv(req, req.params.id);
+  if (!conv) return res.status(404).json({ error: 'conversation not found' });
+
+  const format = String(req.query.format || 'md').toLowerCase() === 'json' ? 'json' : 'md';
+  const messages = db.prepare('SELECT * FROM messages WHERE conversation_id = ? ORDER BY id').all(conv.id);
+  const prompt = conv.prompt_id
+    ? db.prepare('SELECT name FROM system_prompts WHERE id = ?').get(conv.prompt_id)
+    : null;
+  const slug =
+    String(conv.title || 'conversation')
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '')
+      .slice(0, 60) || 'conversation';
+  const filename = `chat-${conv.id}-${slug}.${format}`;
+
+  if (format === 'json') {
+    res.setHeader('Content-Type', 'application/json; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    return res.json({
+      id: conv.id,
+      title: conv.title,
+      model: conv.model,
+      persona: prompt?.name || null,
+      created_at: conv.created_at,
+      updated_at: conv.updated_at,
+      messages: messages.map((m) => ({
+        id: m.id,
+        role: m.role,
+        content: m.content,
+        reasoning: m.reasoning || null,
+        error: m.error || null,
+        image_url: m.image_url || null,
+        files: jsonArray(m.files),
+        created_at: m.created_at
+      }))
+    });
+  }
+
+  const lines = [
+    `# ${conv.title || 'Untitled chat'}`,
+    '',
+    `- **Exported:** ${new Date().toISOString()}`,
+    `- **Model:** ${conv.model || 'default'}`,
+    `- **Persona:** ${prompt?.name || 'none'}`,
+    `- **Messages:** ${messages.filter((m) => m.role !== 'tool').length}`,
+    '',
+    '---',
+    ''
+  ];
+  for (const m of messages) {
+    // Tool rows are implementation detail; their results already appear in the
+    // assistant turn that called them.
+    if (m.role === 'tool') continue;
+    const who = m.role === 'user' ? 'You' : m.role === 'assistant' ? 'Assistant' : 'System';
+    const when = m.created_at ? ` · ${String(m.created_at).slice(0, 16)}` : '';
+    lines.push(`## ${who}${when}`, '');
+    if (m.content) lines.push(String(m.content).trim(), '');
+    if (m.error) lines.push(`> ⚠️ ${String(m.error).trim()}`, '');
+    if (m.image_url) {
+      lines.push(
+        String(m.image_url).startsWith('data:')
+          ? '_Attached image (inline data omitted)_'
+          : `![attached image](${m.image_url})`,
+        ''
+      );
+    }
+    const files = jsonArray(m.files);
+    if (files.length) {
+      for (const f of files) lines.push(`- 📎 ${f.name || f.path || 'file'}`);
+      lines.push('');
+    }
+  }
+  res.setHeader('Content-Type', 'text/markdown; charset=utf-8');
+  res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+  res.send(lines.join('\n'));
+});
+
 // PATCH /api/conversations/:id { title?, prompt_id?, model?, image_url?, workdir?, approval_mode?,
 //                                file_access?, shell_access?, files_enabled?, shell_enabled? }
 router.patch('/:id', (req, res) => {
@@ -146,6 +270,9 @@ router.patch('/:id', (req, res) => {
   for (const col of POLICY_COLUMNS) base[col] = conv[col];
   const { values, error } = policyFromBody(b, base);
   if (error) return res.status(400).json({ error });
+  if (b.prompt_id !== undefined && b.prompt_id !== null && b.prompt_id !== '' && !promptExists(b.prompt_id)) {
+    return res.status(400).json({ error: 'prompt_id does not exist' });
+  }
 
   const sets = [
     'title = ?',
@@ -227,10 +354,13 @@ router.post('/:id/messages', (req, res) => {
 // DELETE /api/conversations/:id/messages/:messageId
 router.delete('/:id/messages/:messageId', (req, res) => {
   if (!ownedConv(req, req.params.id)) return res.status(404).json({ error: 'conversation not found' });
+  const messageId = Number(req.params.messageId);
   const info = db
     .prepare('DELETE FROM messages WHERE id = ? AND conversation_id = ?')
-    .run(Number(req.params.messageId), Number(req.params.id));
+    .run(messageId, Number(req.params.id));
   if (!info.changes) return res.status(404).json({ error: 'message not found' });
+  invalidateStaleSummary(Number(req.params.id), messageId);
+  db.prepare("UPDATE conversations SET updated_at = datetime('now') WHERE id = ?").run(Number(req.params.id));
   res.json({ ok: true });
 });
 
@@ -243,8 +373,27 @@ router.post('/:id/truncate-after', (req, res) => {
   const info = db
     .prepare('DELETE FROM messages WHERE conversation_id = ? AND id >= ?')
     .run(id, messageId);
+  invalidateStaleSummary(id, messageId);
+  db.prepare("UPDATE conversations SET updated_at = datetime('now') WHERE id = ?").run(id);
   res.json({ ok: true, removed: info.changes });
 });
+
+/**
+ * A compaction summary covers every message up to `summarized_upto`. When a
+ * message at or before that point is deleted or edited, the summary describes
+ * turns that no longer exist — drop it so the next turn rebuilds context from
+ * the real messages instead of feeding the model a phantom history.
+ */
+function invalidateStaleSummary(conversationId, firstAffectedId) {
+  const conv = db.prepare('SELECT summary, summarized_upto FROM conversations WHERE id = ?').get(conversationId);
+  if (!conv || !conv.summary) return;
+  if (conv.summarized_upto && firstAffectedId > conv.summarized_upto) return;
+  db.prepare('UPDATE conversations SET summary = NULL, summarized_upto = 0 WHERE id = ?').run(conversationId);
+}
+
+function promptExists(id) {
+  return db.prepare('SELECT 1 FROM system_prompts WHERE id = ?').get(Number(id)) != null;
+}
 
 function defaultPromptId() {
   const row =

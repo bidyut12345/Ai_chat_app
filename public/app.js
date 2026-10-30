@@ -27,14 +27,17 @@ const state = {
   mcp: [],
   currentId: null,
   messages: [],
+  fileChanges: [],
   streaming: false,
   abort: null,
   attachments: [],
   pendingNewPrompt: false,
   search: '',
-  // Auth state: current signed-in user and whether the first account is needed.
+  // Auth state: current signed-in user, whether the first account is needed,
+  // and whether the admin has opened self-service registration.
   currentUser: null,
-  needsSetup: false
+  needsSetup: false,
+  openRegistration: false
 };
 
 // Interval id for the running-generations poll (started once after login).
@@ -92,6 +95,75 @@ async function copyText(text) {
   return ok;
 }
 
+/* ───────────────────────── Timestamps ───────────────────────── */
+
+/** SQLite writes `datetime('now')` as UTC with no zone marker ("2026-10-28
+ *  12:34:56"). Without the added "Z" the Date parser would treat it as local
+ *  time and shift it by the UTC offset. */
+function parseUtcStamp(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return null;
+  const hasZone = /[zZ]$|[+-]\d{2}:?\d{2}$/.test(raw);
+  const d = new Date(hasZone ? raw : raw.replace(' ', 'T') + 'Z');
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
+/** Message header stamp: the viewer's local time on screen, the stored UTC
+ *  value in the tooltip so the exact instant is never ambiguous. */
+function msgStamp(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return { text: '', title: '' };
+  const d = parseUtcStamp(raw);
+  if (!d) return { text: raw.slice(5, 16), title: raw };
+  return {
+    text: d.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }),
+    title: `${raw.replace('T', ' ').replace(/(\.\d+)?[zZ]$/, '')} UTC`
+  };
+}
+
+/* ───────────────────────── Theme (dark / light / system) ───────────────────────── */
+const THEMES = ['dark', 'light', 'system'];
+let storedTheme = 'system';
+
+function systemPrefersLight() {
+  return !!(window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches);
+}
+
+/** Resolve a stored mode ("system" follows the OS) to the concrete theme. */
+function resolveTheme(mode) {
+  if (mode === 'light' || mode === 'dark') return mode;
+  return systemPrefersLight() ? 'light' : 'dark';
+}
+
+function applyTheme(mode) {
+  storedTheme = THEMES.includes(mode) ? mode : 'system';
+  try { localStorage.setItem('theme', storedTheme); } catch { /* storage disabled */ }
+  const resolved = resolveTheme(storedTheme);
+  document.documentElement.dataset.theme = resolved;
+  const meta = document.querySelector('meta[name="theme-color"]');
+  if (meta) meta.setAttribute('content', resolved === 'light' ? '#ffffff' : '#212121');
+  const btn = $('#btn-theme');
+  if (btn) btn.textContent = `🌗 Theme: ${storedTheme}`;
+}
+
+function cycleTheme() {
+  const next = THEMES[(THEMES.indexOf(storedTheme) + 1) % THEMES.length];
+  applyTheme(next);
+  toast(`Theme: ${next}`);
+}
+
+/** Sync the in-memory mode with the inline <head> script and follow the OS. */
+function initTheme() {
+  let saved = 'system';
+  try { saved = localStorage.getItem('theme') || 'system'; } catch { /* ignore */ }
+  applyTheme(THEMES.includes(saved) ? saved : 'system');
+  if (!window.matchMedia) return;
+  const mq = window.matchMedia('(prefers-color-scheme: light)');
+  const onChange = () => { if (storedTheme === 'system') applyTheme('system'); };
+  if (mq.addEventListener) mq.addEventListener('change', onChange);
+  else if (mq.addListener) mq.addListener(onChange);
+}
+
 /* ───────────────────────── Data loading ───────────────────────── */
 async function loadSettings() {
   state.settings = await api('/settings');
@@ -109,7 +181,10 @@ async function loadSettings() {
   $('#key-hint').textContent = s.api_key_masked ? `Saved key: ${s.api_key_masked} (type to replace)` : 'No key saved';
   $('#set-builtin_shell_timeout').value = s.builtin_shell_timeout ?? '';
   $('#set-aitemp_root').value = s.aitemp_root ?? '';
+  const reg = $('#set-allow_registration');
+  if (reg) reg.checked = String(s.allow_registration || '0') === '1';
   if (s.models) fillModelOptions(s.models);
+  applyAdminUi();
   refreshHealth();
 }
 
@@ -136,6 +211,7 @@ async function loadPrompts() {
   for (const p of state.prompts) sel.append(el('option', { value: p.id }, p.name + (p.is_default ? ' ★' : '')));
   sel.value = cur || (state.prompts.find((p) => p.is_default)?.id ?? '');
   renderPromptList();
+  renderInlineChoices();
   updateChatSub();
 }
 
@@ -153,6 +229,9 @@ async function loadMcp() {
   renderMcpList();
   renderPlusMcp();
   updateToolsHint();
+  // The list above is rebuilt from scratch, so re-apply the read-only state for
+  // non-admins after every load (the buttons are new DOM nodes).
+  applyAdminUi();
 }
 
 function current() {
@@ -198,15 +277,19 @@ function renderConvList() {
     return;
   }
   for (const c of items) {
+    const running = runningIds.has(c.id);
+    const title = c.title || 'Untitled';
     const item = el(
       'div',
       {
         class: `conv-item${c.id === state.currentId ? ' active' : ''}`,
         onclick: () => openConversation(c.id)
       },
-      el('div', { class: 'conv-title' }, c.title || 'Untitled',
-        runningIds.has(c.id) ? el('span', { class: 'conv-running', title: 'Generating…' }, '●') : null),
+      el('div', { class: 'conv-title' },
+        el('span', { class: 'conv-title-text', title }, title),
+        running ? el('span', { class: 'conv-spinner', title: 'Generating…', 'aria-label': 'Generating…' }) : null),
       el('div', { class: 'conv-meta' }, `${c.message_count || 0} msg · ${c.prompt_name || 'no persona'}${c.model ? ' · ' + c.model : ''}`),
+      c.workdir ? el('div', { class: 'conv-path', title: c.workdir }, `📂 ${c.workdir}`) : null,
       el('button', {
         class: 'conv-del',
         title: 'Delete conversation',
@@ -243,6 +326,11 @@ async function deleteConversation(id) {
 
 /* ───────────────────────── Conversation ───────────────────────── */
 async function newConversation() {
+  // Tear down the live viewer for whatever chat is on screen *before* the
+  // async round-trip below. Otherwise the old run's events (e.g. the 'done'
+  // that arrives after you press Stop) keep painting into the current view
+  // while we're mid-switch, and can bleed the old chat into the new one.
+  detachRun();
   const defaultPrompt = state.prompts.find((p) => p.is_default);
   const conv = await api('/conversations', {
     method: 'POST',
@@ -263,7 +351,13 @@ async function openConversation(id) {
   state.currentId = id;
   showAllMessages = false;
   const conv = await api(`/conversations/${id}`);
+  // Another conversation may have been opened while this fetch was in flight.
+  // Bail out so a slow response for a chat we navigated away from doesn't
+  // overwrite the one now on screen.
+  if (state.currentId !== id) return;
   state.messages = conv.messages || [];
+  state.fileChanges = await fetchFileChanges(id);
+  if (state.currentId !== id) return;
   const c = current();
   if (c) Object.assign(c, conv);
   $('#chat-title').value = conv.title || 'New chat';
@@ -279,22 +373,54 @@ async function openConversation(id) {
   // (the "blank image" that appeared on text-only messages).
   clearAttachments();
   // If this chat is generating, resume watching it live.
-  if (runningIds.has(id)) attachToRun(id, 0);
+  if (runningIds.has(id)) attachToRun(id, 0, runStartedAt.get(id));
 }
 
 function updateChatSub() {
   const c = current();
   const parts = [];
   if (c) {
-    if (c.prompt_name) parts.push(`persona: ${c.prompt_name}`);
-    parts.push(`model: ${c.model || state.settings.model || 'server default'}`);
-    parts.push(`${state.messages.length} messages`);
+    if (c.prompt_name) parts.push(c.prompt_name);
+    const n = state.messages.length;
+    if (n) parts.push(`${n} message${n === 1 ? '' : 's'}`);
   } else {
     parts.push('no conversation selected');
   }
-  const toolCount = state.mcp.reduce((n, s) => n + (s.status === 'connected' ? s.tools.length : 0), 0);
-  if (toolCount) parts.push(`${toolCount} MCP tools ready`);
+  const off = chatOffServers(c);
+  const toolCount = state.mcp.reduce((n, s) => {
+    if (!s.enabled || s.status !== 'connected') return n;
+    if (off.has(s.name) || (!!s.builtin_key && off.has(s.builtin_key))) return n;
+    return n + s.tools.length;
+  }, 0);
+  if (toolCount) parts.push(`${toolCount} tool${toolCount === 1 ? '' : 's'} ready`);
   $('#chat-sub').textContent = parts.join('  ·  ');
+  renderComposerFolder();
+}
+
+/** Small badge under the message box showing this chat's working folder.
+ *  Shows the last two path segments (full path on hover); admins can click it
+ *  to open the folder picker. Ordinary users cannot browse the server's disk. */
+function renderComposerFolder() {
+  const el2 = $('#composer-folder');
+  if (!el2) return;
+  const c = current();
+  const workdir = c?.workdir || '';
+  if (!workdir) {
+    el2.classList.add('hidden');
+    el2.textContent = '';
+    el2.onclick = null;
+    return;
+  }
+  const segs = workdir.split(/[\\/]+/).filter(Boolean);
+  // Show the last two segments (e.g. "aitemp/6") so the pill is recognisable;
+  // the full path stays in the tooltip.
+  const label = segs.slice(-2).join('/') || workdir;
+  el2.classList.remove('hidden');
+  el2.title = workdir;
+  el2.textContent = `📂 ${label}`;
+  const admin = !!state.currentUser?.is_admin;
+  el2.classList.toggle('readonly', !admin);
+  el2.onclick = admin ? () => openFolderPicker() : null;
 }
 
 /* ───────────────────────── Context & token totals ─────────────────────────
@@ -468,6 +594,8 @@ function renderChatOptions() {
   if (eff) eff.value = c.reasoning_effort || state.settings.reasoning_effort || 'auto';
   syncOptionGroups();
   updateToolsHint();
+  renderInlineChoices();
+  renderPlusMcp();
 }
 
 /** Mark the active button of a segmented toggle group. */
@@ -494,8 +622,12 @@ async function setChatOption(patch) {
   try {
     const updated = await api(`/conversations/${c.id}`, { method: 'PATCH', body: patch });
     Object.assign(c, updated);
+    $('#co-files-on').checked = Number(c.files_enabled ?? 1) !== 0;
+    $('#co-shell-on').checked = Number(c.shell_enabled ?? 1) !== 0;
     syncOptionGroups();
     updateToolsHint();
+    updateChatSub();
+    renderPlusMcp();
   } catch (e) {
     toast(e.message, true);
     renderChatOptions(); // roll the control back to the stored value
@@ -507,14 +639,40 @@ const INITIAL_MSG_LIMIT = 50;
 
 function renderMessages() {
   const box = $('#messages');
+  // The "+" menu is moved into the blank-chat setup panel. Bring it home
+  // before clearing the transcript, or it would be wiped with the messages.
+  detachInlinePlus();
   box.innerHTML = '';
   autoFollow = true;
+  const exportBtn = $('#btn-export-chat');
+  if (exportBtn) exportBtn.disabled = !state.currentId;
   if (!state.currentId) {
     box.append($('#empty-state') || buildEmptyState());
     $('#empty-state').classList.remove('hidden');
+    const rail = $('#pill-rail');
+    if (rail) { rail.innerHTML = ''; rail.classList.add('hidden'); }
     return;
   }
   const msgs = state.messages;
+  // A freshly created chat has no messages yet: show the welcome panel instead
+  // of an empty page, but without the "start a chat" buttons (we're already in
+  // one) so the composer below is the obvious next step.
+  if (!msgs.length) {
+    const empty = buildEmptyState();
+    empty.classList.add('in-chat', 'has-setup');
+    empty.querySelector('.empty-actions')?.remove();
+    // The panel is the point of this screen, so drop the big welcome block and
+    // keep a single line of context above it.
+    empty.querySelector('.empty-emoji')?.remove();
+    empty.querySelector('h2')?.remove();
+    const p = empty.querySelector('p');
+    if (p) p.textContent = 'Everything here applies to this chat. Add files or images with +.';
+    box.append(empty);
+    attachInlinePlus(empty);
+    const rail = $('#pill-rail');
+    if (rail) { rail.innerHTML = ''; rail.classList.add('hidden'); }
+    return;
+  }
   if (!showAllMessages && msgs.length > INITIAL_MSG_LIMIT) {
     const hiddenCount = msgs.length - INITIAL_MSG_LIMIT;
     const banner = el('div', { class: 'load-earlier-banner', style: 'text-align:center; padding:12px; margin-bottom:12px;' },
@@ -531,6 +689,62 @@ function renderMessages() {
     for (const m of msgs) box.append(renderMessage(m));
   }
   scrollBottom();
+  renderPillRail();
+}
+
+/* ───────────────────────── Pill scroll rail ─────────────────────────
+ * A vertical minimap beside the transcript: one pill per *rendered* message,
+ * laid out proportionally to its position. Clicking a pill scrolls to that
+ * message; the active pill tracks what's currently near the top. Pills mirror
+ * only the messages on screen (earlier ones may be behind the load-earlier
+ * cutoff), so every pill always has a target to scroll to. */
+function renderPillRail() {
+  const rail = $('#pill-rail');
+  if (!rail) return;
+  rail.innerHTML = '';
+  const box = $('#messages');
+  const nodes = [...box.querySelectorAll('.msg[data-id]')].filter((n) => n.classList.contains('user') || n.classList.contains('assistant'));
+  if (nodes.length < 2) {
+    rail.classList.add('hidden');
+    return;
+  }
+  rail.classList.remove('hidden');
+  const n = nodes.length;
+  nodes.forEach((node, i) => {
+    const id = Number(node.getAttribute('data-id'));
+    const role = node.classList.contains('user') ? 'user' : 'assistant';
+    const pill = el('div', { class: `pill ${role}`, 'data-idx': String(i) });
+    pill.style.top = `calc(${(i / n) * 100}% + 1px)`;
+    pill.title = (node.querySelector('.content')?.textContent || role).replace(/\s+/g, ' ').slice(0, 60);
+    pill.onclick = () => {
+      const t = box.querySelector(`.msg[data-id="${id}"]`);
+      if (!t) return;
+      autoFollow = false;
+      // Scroll deterministically: smooth animation can be cancelled by the
+      // box's own scroll handler, so set scrollTop directly (instant).
+      const targetTop = t.getBoundingClientRect().top - box.getBoundingClientRect().top + box.scrollTop;
+      box.scrollTop = Math.max(0, targetTop - 4);
+    };
+    rail.append(pill);
+  });
+  syncActivePill();
+}
+
+/** Highlight the pill whose message is nearest the top of the viewport. */
+function syncActivePill() {
+  const rail = $('#pill-rail');
+  if (!rail || rail.classList.contains('hidden')) return;
+  const box = $('#messages');
+  const nodes = [...box.querySelectorAll('.msg[data-id]')].filter((n) => n.classList.contains('user') || n.classList.contains('assistant'));
+  if (!nodes.length) return;
+  const top = box.scrollTop + 4;
+  let bestIdx = 0;
+  for (let i = 0; i < nodes.length; i++) {
+    if (nodes[i].offsetTop <= top + 1) bestIdx = i;
+    else break;
+  }
+  const pills = rail.children;
+  for (let i = 0; i < pills.length; i++) pills[i].classList.toggle('active', i === bestIdx);
 }
 
 function buildEmptyState() {
@@ -540,26 +754,127 @@ function buildEmptyState() {
     el('p', { html: 'Your conversations are stored in a local SQLite database.<br>Point Settings at any OpenAI-compatible server (LM Studio, Ollama, llama.cpp, vLLM, OpenAI…).' }),
     el('div', { class: 'empty-actions' },
       el('button', { class: 'btn btn-primary', onclick: () => newConversation() }, 'Start a chat'),
-      el('button', { class: 'btn', onclick: () => openModal('#dlg-settings') }, 'Configure server URL'))
+      el('button', { class: 'btn', onclick: () => openModal('#dlg-settings') }, 'Configure server URL')),
+    el('div', { class: 'empty-setup' },
+      el('div', { class: 'empty-setup-head' }, 'Chat setup'))
   );
   return d;
 }
 
+/* ── Blank-chat setup panel ──
+ * While a chat has no messages there is nothing to read, so the per-chat
+ * settings move out of the "+" menu and sit in the blank area: everything on
+ * screen at once, no tabs, and the two <select> rows (persona, thinking) are
+ * mirrored as one-click chips so no choice hides behind a dropdown.
+ *
+ * Attachments stay in the "+" menu — the "+" button keeps working exactly as
+ * it does in a chat with messages. Only the sections listed below are moved,
+ * so there is still a single copy of every control and no state to sync; the
+ * same nodes go back into the menu as soon as the chat has content. */
+const SETUP_INLINE_SECTIONS = ['chat-options', 'pm-mcp-tools', 'pm-mcp-builtin', 'pm-mcp-custom'];
+const SETUP_MENU_ORDER = ['pm-mcp-tools', 'pm-mcp-builtin', 'pm-mcp-custom', 'pm-attach', 'chat-options', 'image-url-row'];
+
+function attachInlinePlus(empty) {
+  const menu = $('#plus-menu');
+  const host = empty && empty.querySelector('.empty-setup');
+  if (!menu || !host) return;
+  let body = host.querySelector('.empty-setup-body');
+  if (!body) {
+    body = el('div', { class: 'empty-setup-body' });
+    host.append(body);
+  }
+  for (const id of SETUP_INLINE_SECTIONS) {
+    const sec = menu.querySelector('#' + id);
+    if (sec) body.append(sec);
+  }
+  menu.dataset.split = '1';
+  renderInlineChoices();
+}
+
+/** Put the moved sections back in the "+" menu (original order). */
+function detachInlinePlus() {
+  const menu = $('#plus-menu');
+  if (!menu || menu.dataset.split !== '1') return;
+  for (const id of SETUP_MENU_ORDER) {
+    const sec = document.getElementById(id);
+    if (sec) menu.append(sec);
+  }
+  // The popup uses the plain selects again.
+  for (const box of menu.querySelectorAll('.choice-chips')) box.remove();
+  for (const row of menu.querySelectorAll('.has-chips')) row.classList.remove('has-chips');
+  delete menu.dataset.split;
+}
+
+/** Mirror one <select> as one-click chips, kept in sync both ways. */
+function choiceChips(sel) {
+  const row = sel.closest('.pm-row');
+  if (!row) return;
+  let box = row.querySelector('.choice-chips');
+  if (!box) {
+    const label = row.querySelector('.pm-label');
+    box = el('div', {
+      class: 'choice-chips',
+      role: 'group',
+      'aria-label': label ? label.textContent : 'Choices'
+    });
+    sel.insertAdjacentElement('afterend', box);
+  }
+  row.classList.add('has-chips');
+  box.innerHTML = '';
+  for (const o of sel.options) {
+    const on = o.value === sel.value;
+    box.append(el('button', {
+      type: 'button',
+      class: `choice-chip${on ? ' on' : ''}`,
+      'data-value': o.value,
+      'aria-pressed': on ? 'true' : 'false',
+      onclick: () => {
+        sel.value = o.value;
+        sel.dispatchEvent(new Event('change'));
+        renderInlineChoices();
+      }
+    }, o.textContent.replace(/\s*★\s*$/, '')));
+  }
+}
+
+/** Repaint the inline chips from the live select values. */
+function renderInlineChoices() {
+  const menu = $('#plus-menu');
+  const body = document.querySelector('.empty-setup-body');
+  if (!menu || menu.dataset.split !== '1' || !body) return;
+  for (const sel of body.querySelectorAll('select')) choiceChips(sel);
+}
+
+/** Label of the button that restarts a reply which a server error cut short. */
+const RESUME_LABEL = '▶ Resume';
+
 function renderMessage(m) {
   const label = m.role === 'user' ? 'You' : m.role === 'tool' ? 'Tool result' : m.role === 'system' ? 'System' : 'Assistant';
   const avatar = m.role === 'user' ? '🧑' : m.role === 'tool' ? '🔌' : m.role === 'system' ? 'ℹ️' : '🤖';
+  const isLast = state.messages[state.messages.length - 1]?.id === m.id;
   const wrap = el('div', { class: `msg ${m.role}`, 'data-id': m.id });
   wrap.append(el('div', { class: 'msg-avatar' }, avatar));
+  const stamp = msgStamp(m.created_at);
+  // A failed reply may have no text at all — the reason lives in `error`, so the
+  // copy button would only copy an empty string.
+  const canCopy = !!(m.content || '').trim();
   const body = el('div', { class: 'msg-body' });
   body.append(
     el('div', { class: 'msg-head' },
       el('strong', {}, label),
-      el('span', {}, m.created_at ? String(m.created_at).slice(5, 16) : ''),
+      el('span', { class: 'msg-time', title: stamp.title || null }, stamp.text),
       el('span', { class: 'msg-actions' },
-        el('button', { title: 'Copy', onclick: async () => { toast((await copyText(m.content || '')) ? 'Copied' : 'Copy failed'); } }, 'copy'),
-        m.role === 'assistant' ? el('button', { title: 'Regenerate the last reply', onclick: () => regenerate() }, 'regenerate') : null,
+        canCopy ? el('button', { title: 'Copy', onclick: async () => { toast((await copyText(m.content || '')) ? 'Copied' : 'Copy failed'); } }, 'copy') : null,
+        // Regenerate and delete belong to the user's turn: they act on the
+        // question and its answer, so they are not shown on assistant rows.
+        m.role === 'user' && hasReplyAfter(m)
+          ? el('button', { title: 'Regenerate the reply to this message', onclick: () => regenerateFrom(m) }, 'regenerate')
+          : null,
+        m.role === 'assistant' && isLast && !state.streaming && !m.error
+          ? el('button', { title: 'Continue this reply where it stopped', onclick: () => continueReply() }, 'continue')
+          : null,
         m.role === 'user' ? el('button', { title: 'Edit & resend', onclick: () => editUserMessage(m) }, 'edit') : null,
-        el('button', { title: 'Delete message', onclick: () => deleteMessage(m.id) }, 'delete')
+        m.role === 'user' ? el('button', { title: 'Delete message', onclick: () => deleteMessage(m.id) }, 'delete') : null
       )
     )
   );
@@ -592,9 +907,11 @@ function renderMessage(m) {
       );
     }
 
-    const content = el('div', { class: 'content' });
-    content.innerHTML = renderMarkdown(m.content || '');
-    bubble.append(content);
+    if (m.content || !m.error) {
+      const content = el('div', { class: 'content' });
+      content.innerHTML = renderMarkdown(m.content || '');
+      bubble.append(content);
+    }
 
     if (files.length) bubble.append(fileChips(files));
 
@@ -604,7 +921,45 @@ function renderMessage(m) {
       }
     }
   }
+  // Persisted failure reason: shown in the transcript (not just a transient
+  // toast), so a reload still explains why the reply stopped. When the failed
+  // reply is the last one, it also gets a Resume button: the server kept
+  // whatever had already streamed, so the useful next step is to ask the model
+  // to carry on from that point instead of starting the answer over.
+  if (m.error) {
+    const canResume = m.role === 'assistant' && isLast && !state.streaming;
+    const box = el('div', { class: 'error-box', role: 'alert' },
+      el('div', { class: 'error-text' }, m.error)
+    );
+    if (canResume) {
+      box.append(
+        el('div', { class: 'error-actions' },
+          el('button', {
+            class: 'btn btn-primary sm error-resume',
+            title: 'Ask the model to continue this reply from where it stopped',
+            onclick: async (e) => {
+              const btn = e.currentTarget;
+              btn.disabled = true;
+              btn.textContent = 'Resuming…';
+              // continueReply() re-enables the button by returning false when it
+              // could not start, so a failed attempt is not a dead end.
+              if (!(await continueReply())) {
+                btn.disabled = false;
+                btn.textContent = RESUME_LABEL;
+              }
+            }
+          }, RESUME_LABEL)
+        )
+      );
+    }
+    bubble.append(box);
+  }
   body.append(bubble);
+  // Files this turn changed, shown under the user message that asked for them.
+  if (m.role === 'user') {
+    const changes = (state.fileChanges || []).filter((c) => c.message_id === m.id);
+    if (changes.length) body.append(fileChangeList(changes));
+  }
   if (m.role === 'assistant') {
     const stats = el('div', { class: 'msg-stats' }, statsText(m));
     body.append(stats);
@@ -798,11 +1153,32 @@ function tokenBreakdown(m) {
   return box;
 }
 
+const IMAGE_EXT_RE = /\.(png|jpe?g|gif|webp|bmp|svg|avif|ico)$/i;
+const isImageFile = (f) => !!f && !f.dir && IMAGE_EXT_RE.test(f.name || '');
+
+/** A produced image file: thumbnail that opens in the fullscreen lightbox. */
+function imageChip(f) {
+  return el('figure', { class: 'file-chip file-chip-image', title: f.path },
+    el('img', {
+      class: 'file-thumb',
+      src: fileUrl(f.path, false),
+      alt: f.name,
+      loading: 'lazy',
+      onerror: (e) => { e.target.closest('.file-chip-image')?.classList.add('thumb-broken'); }
+    }),
+    el('figcaption', {},
+      el('span', { class: 'file-chip-name' }, f.name),
+      el('span', { class: 'file-chip-size' }, fmtSize(f.size)),
+      el('a', { class: 'file-chip-dl', href: fileUrl(f.path), download: f.name, title: 'Download' }, '⬇ save')
+    )
+  );
+}
+
 function fileChips(files) {
   const box = el('div', { class: 'file-chips' });
   for (const f of files) {
     box.append(
-      el('span', { class: 'file-chip', title: f.path },
+      isImageFile(f) ? imageChip(f) : el('span', { class: 'file-chip', title: f.path },
         el('span', {}, f.dir ? '📁' : '📄'),
         el('span', { class: 'file-chip-name' }, f.name),
         f.dir ? null : el('span', { class: 'file-chip-size' }, fmtSize(f.size)),
@@ -967,6 +1343,7 @@ function watchMessagesScroll() {
     autoFollow = isNearBottom();
     const btn = $('#scroll-latest');
     if (btn) btn.classList.toggle('hidden', autoFollow);
+    syncActivePill();
   }, { passive: true });
 }
 
@@ -1054,6 +1431,7 @@ async function browseFolder(p) {
 }
 
 function openFolderPicker() {
+  if (adminOnly()) return;
   const c = current();
   setPlusMenu(false);
   folderError('');
@@ -1111,6 +1489,10 @@ function fileUrl(p, download = true) {
   return `/api/conversations/${state.currentId}/fs/raw?${q}`;
 }
 
+// Used by markdown.js to turn a local image path in model output into a URL the
+// browser can load. Served inline (no download=1) so it renders in an <img>.
+window.conversationFileUrl = (p) => fileUrl(p, false);
+
 async function browseFiles(p) {
   if (!state.currentId) return;
   try {
@@ -1144,21 +1526,91 @@ async function browseFiles(p) {
   }
 }
 
+const PREVIEW_IMAGE = /\.(png|jpe?g|gif|webp|svg|bmp|avif|ico)$/i;
+const PREVIEW_MD = /\.(md|markdown)$/i;
+const PREVIEW_HTML = /\.(html?|xhtml)$/i;
+
 async function previewFile(e) {
+  filesError('');
+  const list = $('#files-list');
+  const head = (extra = []) =>
+    el('div', { class: 'row file-preview-head' },
+      el('strong', {}, e.name),
+      el('span', { class: 'muted' }, fmtSize(e.size)),
+      ...extra,
+      el('a', { class: 'btn btn-ghost icon-btn', href: fileUrl(e.path), title: 'Download' }, '⬇'),
+      el('button', { class: 'btn', onclick: () => browseFiles(fileBrowser.path) }, '⬅ back')
+    );
+  list.innerHTML = '';
+
+  // Images are served inline by the raw endpoint; render them directly instead
+  // of reading the binary through the JSON API.
+  if (PREVIEW_IMAGE.test(e.path)) {
+    list.append(
+      el('div', { class: 'file-preview' }, head(),
+        el('div', { class: 'file-preview-image' },
+          el('img', { src: fileUrl(e.path, false), alt: e.name, loading: 'lazy' }))
+      )
+    );
+    return;
+  }
+
   try {
     const r = await api(`/conversations/${state.currentId}/fs/raw?path=${encodeURIComponent(e.path)}`);
     if (r.text == null) return browseFiles(fileBrowser.path);
-    const list = $('#files-list');
-    list.innerHTML = '';
-    list.append(
-      el('div', { class: 'file-preview' },
-        el('div', { class: 'row file-preview-head' },
-          el('strong', {}, r.name),
-          el('span', { class: 'muted' }, fmtSize(r.size)),
-          el('a', { class: 'btn btn-ghost icon-btn', href: fileUrl(e.path), title: 'Download' }, '⬇'),
-          el('button', { class: 'btn', onclick: () => browseFiles(fileBrowser.path) }, '⬅ back')),
-        el('pre', { class: 'file-preview-body' }, r.text))
-    );
+    const isMd = PREVIEW_MD.test(e.path);
+    const isHtml = PREVIEW_HTML.test(e.path);
+    if (!isMd && !isHtml) {
+      // Code / plain text: one scrollable code view.
+      list.append(
+        el('div', { class: 'file-preview' }, head(),
+          el('pre', { class: 'file-preview-body' }, r.text))
+      );
+      return;
+    }
+
+    // Markdown and HTML get a rendered preview plus the raw source, switchable.
+    const codeView = el('pre', { class: 'file-preview-body' }, r.text);
+    const content = el('div', { class: 'file-preview-content' });
+    const tabs = el('div', { class: 'file-view-tabs' });
+    let mode = 'preview';
+    const paint = () => {
+      tabs.querySelectorAll('button').forEach((b) => b.classList.toggle('on', b.dataset.mode === mode));
+      content.innerHTML = '';
+      if (mode === 'code') {
+        content.append(codeView);
+        return;
+      }
+      if (isMd) {
+        const md = el('div', { class: 'md-preview' });
+        md.innerHTML = renderMarkdown(r.text);
+        content.append(md);
+      } else {
+        // No allow-scripts and no allow-same-origin: a preview must not be able
+        // to run code against the app's origin.
+        content.append(
+          el('iframe', {
+            class: 'html-preview',
+            sandbox: '',
+            referrerpolicy: 'no-referrer',
+            title: `${e.name} preview`,
+            srcdoc: r.text
+          })
+        );
+      }
+    };
+    for (const [m, label] of [['preview', 'Preview'], ['code', 'Code']]) {
+      tabs.append(el('button', {
+        class: `btn sm${m === 'preview' ? ' on' : ''}`,
+        'data-mode': m,
+        onclick: () => {
+          mode = m;
+          paint();
+        }
+      }, label));
+    }
+    paint();
+    list.append(el('div', { class: 'file-preview' }, head([tabs]), content));
   } catch (err) {
     filesError(err.message);
   }
@@ -1267,6 +1719,120 @@ function openFileManager() {
   openModal('#dlg-files');
 }
 
+/* ───────────────────────── Per-message file changes ─────────────────────────
+ * Every turn records the text files its tools changed (see server
+ * fileChanges.js). They are listed under the user message that started the
+ * turn, with a comparison dialog and a per-file revert.
+ */
+async function fetchFileChanges(convId) {
+  try {
+    const r = await api(`/conversations/${convId}/fs/changes`);
+    return Array.isArray(r.changes) ? r.changes : [];
+  } catch {
+    return [];
+  }
+}
+
+function fileChangeList(changes) {
+  const box = el('details', { class: 'file-changes' },
+    el('summary', {},
+      el('span', { class: 'file-changes-ico' }, '📝'),
+      `${changes.length} file${changes.length === 1 ? '' : 's'} changed`
+    )
+  );
+  const list = el('div', { class: 'file-changes-list' });
+  for (const c of changes) {
+    const stats = [];
+    if (c.added) stats.push(`+${c.added}`);
+    if (c.removed) stats.push(`−${c.removed}`);
+    const reverted = !!c.reverted_at;
+    list.append(
+      el('div', { class: `file-change-row${reverted ? ' is-reverted' : ''}` },
+        el('span', { class: 'file-change-name', title: c.path }, c.rel_path || c.path),
+        el('span', { class: 'file-change-stats' }, reverted ? 'reverted' : stats.join(' ') || 'changed'),
+        el('button', { class: 'btn btn-ghost sm', onclick: () => openDiff(c.id) }, 'Compare'),
+        reverted
+          ? null
+          : el('button', {
+              class: 'btn btn-danger sm',
+              title: 'Put this file back the way it was before this message',
+              onclick: (e) => revertFileChange(c, e.currentTarget)
+            }, 'Revert')
+      )
+    );
+  }
+  box.append(list);
+  return box;
+}
+
+async function openDiff(changeId) {
+  if (!state.currentId) return;
+  try {
+    const r = await api(`/conversations/${state.currentId}/fs/changes/${changeId}`);
+    $('#diff-title').textContent = r.rel_path || r.path;
+    const added = r.diff.filter((o) => o.t === 'add').length;
+    const removed = r.diff.filter((o) => o.t === 'del').length;
+    $('#diff-stats').textContent = `${added ? `+${added}` : ''}${removed ? ` −${removed}` : ''}`.trim() || 'no textual change';
+    const body = $('#diff-body');
+    body.innerHTML = '';
+    for (const op of r.diff) {
+      body.append(
+        el('div', { class: `diff-line ${op.t}` },
+          el('span', { class: 'diff-sign' }, op.t === 'add' ? '+' : op.t === 'del' ? '−' : ' '),
+          el('span', { class: 'diff-text' }, op.text === '' ? ' ' : op.text)
+        )
+      );
+    }
+    const btn = $('#btn-diff-revert');
+    btn.classList.toggle('hidden', !!r.reverted_at);
+    btn.disabled = false;
+    btn.onclick = async () => {
+      btn.disabled = true;
+      try {
+        await api(`/conversations/${state.currentId}/fs/changes/${changeId}/revert`, { method: 'POST' });
+        toast('File reverted');
+        await refreshFileChanges();
+        $('#dlg-diff').close();
+      } catch (e) {
+        toast(e.message, true);
+        btn.disabled = false;
+      }
+    };
+    openModal('#dlg-diff');
+  } catch (e) {
+    toast(e.message, true);
+  }
+}
+
+async function revertFileChange(c, btn) {
+  // Two-step confirm: reverting overwrites (or removes) a real file.
+  if (!btn.dataset.armed) {
+    btn.dataset.armed = '1';
+    btn.textContent = 'sure?';
+    setTimeout(() => {
+      if (!btn.isConnected) return;
+      delete btn.dataset.armed;
+      btn.textContent = 'Revert';
+    }, 3000);
+    return;
+  }
+  btn.disabled = true;
+  try {
+    await api(`/conversations/${state.currentId}/fs/changes/${c.id}/revert`, { method: 'POST' });
+    toast('File reverted');
+    await refreshFileChanges();
+  } catch (e) {
+    toast(e.message, true);
+    btn.disabled = false;
+  }
+}
+
+async function refreshFileChanges() {
+  if (!state.currentId) return;
+  state.fileChanges = await fetchFileChanges(state.currentId);
+  renderMessages();
+}
+
 /* ───────────────────────── Streaming chat ─────────────────────────
  * Generation runs on the server (see runManager / POST /api/chat). The browser
  * is only a viewer: it attaches to GET /api/chat/stream, and can detach and
@@ -1279,21 +1845,31 @@ const TYPING = '<span class="typing"><i></i><i></i><i></i></span>';
 // Conversation ids the server told us are generating (sidebar badges).
 const runningIds = new Set();
 
+// When each of those runs actually started (server clock, epoch ms). Kept apart
+// from the live viewer so a refresh or a chat switch resumes the elapsed time
+// instead of restarting it at 0.
+const runStartedAt = new Map();
+
 function setRunningBadge(id, on) {
   const changed = on ? runningIds.add(id) : runningIds.delete(id);
+  if (!on) runStartedAt.delete(id);
   if (changed) { renderConvList(); updateAppBusy(); }
 }
 
 async function refreshRunning() {
   try {
     const r = await api('/chat/running');
-    const ids = new Set((r.runs || []).map((x) => x.conversation_id));
-    for (const id of [...runningIds]) if (!ids.has(id)) runningIds.delete(id);
+    const runs = r.runs || [];
+    const ids = new Set(runs.map((x) => x.conversation_id));
+    for (const x of runs) if (x.started_at) runStartedAt.set(x.conversation_id, x.started_at);
+    for (const id of [...runningIds]) {
+      if (!ids.has(id)) { runningIds.delete(id); runStartedAt.delete(id); }
+    }
     for (const id of ids) runningIds.add(id);
     renderConvList();
     updateAppBusy();
     // Resume watching if the chat now on screen is generating and we're not.
-    if (ids.has(state.currentId) && !run) attachToRun(state.currentId, 0);
+    if (ids.has(state.currentId) && !run) attachToRun(state.currentId, 0, runStartedAt.get(state.currentId));
   } catch {
     /* server not reachable */
   }
@@ -1308,7 +1884,11 @@ async function sendMessage(regenerate = false) {
   const input = $('#input');
   let content = input.value.trim();
   const image = pendingImage();
-  const files = state.attachments.filter((a) => a.data);
+  // Images go to the model as a vision image only. Non-image files are saved
+  // into the working folder and referenced by path. Uploading the image too
+  // (and telling the model its path) made it run Python/file tools to "read"
+  // a picture it can already see — so keep images out of the file path here.
+  const files = state.attachments.filter((a) => a.data && a.kind !== 'image');
   if (!regenerate && !content && !image && !files.length) return;
 
   if (!regenerate) {
@@ -1355,19 +1935,23 @@ async function sendMessage(regenerate = false) {
     const fresh = await api(`/conversations/${convId}`);
     if (convId === state.currentId) {
       state.messages = fresh.messages || [];
-      renderMessages();
+      state.fileChanges = await fetchFileChanges(convId);
+      if (convId === state.currentId) renderMessages();
     }
   } catch {
     /* keep optimistic view */
   }
-  attachToRun(convId, 0);
+  if (ack && ack.started_at) runStartedAt.set(convId, ack.started_at);
+  attachToRun(convId, 0, ack && ack.started_at);
 }
 
 /**
  * Build (or rebuild) the live assistant bubble for a run and stream into it.
- * `lastEventId` resumes after the given server event sequence (0 = from start).
+ * `lastEventId` resumes after the given server event sequence (0 = from start);
+ * `startedAt` is the server's start time, so the elapsed clock survives a
+ * refresh instead of restarting when the viewer re-attaches.
  */
-function attachToRun(conversationId, lastEventId = 0) {
+function attachToRun(conversationId, lastEventId = 0, startedAt = 0) {
   if (conversationId !== state.currentId) return; // stale attach
   detachRun();
 
@@ -1396,7 +1980,10 @@ function attachToRun(conversationId, lastEventId = 0) {
     currentTextEl: contentEl,
     activeThinking: null,
     gotText: false,
-    startedAt: Date.now(),
+    startedAt: Number(startedAt) || runStartedAt.get(conversationId) || Date.now(),
+    // Last event id that belongs to the backlog replayed on attach (see the
+    // 'hello' event). Replayed tokens are not live generation speed.
+    replayUntil: 0,
     firstTokenAt: null,
     // Time spent actually generating tokens (reasoning + answer), accumulated in
     // small increments so tool-execution and re-prefill gaps are excluded. This
@@ -1417,7 +2004,7 @@ function attachToRun(conversationId, lastEventId = 0) {
   // that dead time would make the rate collapse.
   run.timer = setInterval(() => {
     if (!run) return;
-    const secs = (Date.now() - run.startedAt) / 1000;
+    const secs = Math.max(0, (Date.now() - run.startedAt) / 1000);
     const bits = [`⏱ ${fmtDuration(secs * 1000)}`];
     if (run.genMs > 400) {
       const outTokens = (run.outChars + (run.reasonChars || 0)) / 4;
@@ -1437,6 +2024,13 @@ function attachToRun(conversationId, lastEventId = 0) {
 // generation-time total, so the live tok/s reflects actual decode speed.
 const CONTINUOUS_GAP_MS = 700;
 
+/** True while the stream is still replaying events the server had buffered.
+ *  Those all arrive at once, so counting them as decode speed would report an
+ *  impossible rate right after a reload or a reconnect. */
+function isReplay(r) {
+  return r.replayUntil > 0 && r.lastEventId <= r.replayUntil;
+}
+
 /** Record a streamed token (reasoning or answer) toward generation time. */
 function noteToken(r) {
   const now = Date.now();
@@ -1451,14 +2045,25 @@ function noteToken(r) {
 function openRunStream(r) {  const url = `/api/chat/stream?conversation_id=${r.conversationId}&last_event_id=${r.lastEventId}`;
   const es = new EventSource(url);
   r.es = es;
-  for (const name of ['delta', 'reasoning', 'notice', 'tool_call', 'tool_result', 'tool_cancelled', 'tool_denied', 'tool_unavailable', 'file_created', 'compressed', 'title', 'stats', 'done', 'error', 'resync', 'idle']) {
+  for (const name of ['delta', 'reasoning', 'notice', 'tool_generating', 'tool_call', 'tool_result', 'tool_cancelled', 'tool_denied', 'tool_unavailable', 'file_created', 'compressed', 'title', 'stats', 'done', 'error', 'resync', 'idle']) {
     es.addEventListener(name, (e) => {
-      // Track our cursor so a reconnect resumes in the right place.
-      const id = Number(e.lastEventId);
-      if (Number.isFinite(id) && run === r) run.lastEventId = id;
+      // Track our cursor so a reconnect resumes in the right place. Events
+      // without an id (resync/idle) must not zero the cursor.
+      if (e.lastEventId) {
+        const id = Number(e.lastEventId);
+        if (Number.isFinite(id) && run === r) run.lastEventId = id;
+      }
       handleRunEvent(r, name, e.data ? JSON.parse(e.data) : {});
     });
   }
+  // The server tells us where the replayed backlog ends (and the true start
+  // time) before sending it.
+  es.addEventListener('hello', (e) => {
+    let d = {};
+    try { d = JSON.parse(e.data); } catch { /* ignore */ }
+    if (Number.isFinite(Number(d.seq))) r.replayUntil = Number(d.seq);
+    if (Number(d.started_at)) r.startedAt = Number(d.started_at);
+  });
   // A dropped connection is fine — the server run continues. Reconnect after a
   // beat, resuming from the last event id we processed.
   es.onerror = () => {
@@ -1476,6 +2081,11 @@ function sealThinking(r) {
   if (!t) return;
   const sum = t.box.querySelector('summary');
   if (sum) sum.textContent = `🧠 Thinking (${t.buf.length.toLocaleString()} characters)`;
+  // Reasoning is painted on an animation frame, but a burst can be sealed
+  // before that frame runs (the answer or a tool call arrives in the same
+  // tick). Paint the final text now, or the box would claim N characters and
+  // open to an empty body.
+  t.body.innerHTML = renderMarkdown(t.buf);
   t.box.removeAttribute('open');
   r.activeThinking = null;
 }
@@ -1514,8 +2124,10 @@ function handleRunEvent(r, event, d) {
       r.currentTextEl = el('div', { class: 'content' });
       bubble.append(r.currentTextEl);
     }
-    r.outChars += (d.text || '').length;
-    noteToken(r);
+    if (!isReplay(r)) {
+      r.outChars += (d.text || '').length;
+      noteToken(r);
+    }
     r.textBuf += d.text || '';
     r.currentTextEl.innerHTML = renderMarkdown(r.textBuf) + TYPING;
     scrollToBottomIfFollowing();
@@ -1531,9 +2143,12 @@ function handleRunEvent(r, event, d) {
     applyTitle(d.title);
   } else if (event === 'reasoning') {
     // Reasoning tokens are the first thing a thinking model generates, so they
-    // seed the live speed timer and count toward the estimated rate.
-    r.reasonChars += (d.text || '').length;
-    noteToken(r);
+    // seed the live speed timer and count toward the estimated rate — unless
+    // they are being replayed from the backlog.
+    if (!isReplay(r)) {
+      r.reasonChars += (d.text || '').length;
+      noteToken(r);
+    }
     sealText(r);
     if (!r.activeThinking) {
       const box = el('details', { class: 'thinking', open: 'open' }, el('summary', {}, '🧠 Thinking…'));
@@ -1551,16 +2166,47 @@ function handleRunEvent(r, event, d) {
     const chip = buildToolChip({ id: d.id, name: d.name, status: 'unavailable' });
     bubble.append(chip);
     scrollToBottomIfFollowing();
+  } else if (event === 'tool_generating') {
+    // The model is still streaming this tool call's arguments (can take a long
+    // time for big write/edit payloads) — show the chip with live progress.
+    sealThinking(r);
+    sealText(r);
+    let chip = findChip(bubble, d.id);
+    if (!chip) {
+      chip = buildToolChip({ id: d.id, name: d.name || 'tool', status: 'running' });
+      bubble.append(chip);
+    }
+    const nameEl = chip.querySelector('.tool-name');
+    if (nameEl && d.name && nameEl.textContent === 'tool') nameEl.textContent = d.name;
+    const status = chip.querySelector('.tool-status');
+    if (status) status.textContent = `generating… ${fmtTokens(d.args_chars || 0)} chars`;
+    scrollToBottomIfFollowing();
   } else if (event === 'tool_call') {
     sealThinking(r);
     sealText(r);
-    const chip = buildToolChip({
-      id: d.id,
-      name: d.name,
-      argsText: JSON.stringify(d.arguments ?? {}, null, 2),
-      status: 'running'
-    });
-    bubble.append(chip);
+    // Reuse the chip from 'tool_generating' if we have one; it's the same call.
+    const argsText = JSON.stringify(d.arguments ?? {}, null, 2);
+    let chip = findChip(bubble, d.id);
+    if (chip) {
+      const nameEl = chip.querySelector('.tool-name');
+      if (nameEl && d.name) nameEl.textContent = d.name;
+      let argsBlock = chip.querySelector('.tool-args');
+      if (!argsBlock) {
+        argsBlock = el('div', { class: 'tool-args' }, el('pre', {}));
+        chip.insertBefore(argsBlock, chip.querySelector('.tool-out'));
+      }
+      const pre = argsBlock.querySelector('pre');
+      if (pre && pre.textContent !== argsText) pre.textContent = argsText;
+      applyToolState(chip, { status: 'running' });
+    } else {
+      chip = buildToolChip({
+        id: d.id,
+        name: d.name,
+        argsText,
+        status: 'running'
+      });
+      bubble.append(chip);
+    }
     scrollToBottomIfFollowing();
   } else if (event === 'tool_denied') {
     const chip = findChip(bubble, d.id);
@@ -1595,8 +2241,9 @@ function handleRunEvent(r, event, d) {
   } else if (event === 'error') {
     finishRun(r, { error: d.message || 'stream error' });
   } else if (event === 'resync') {
-    // Buffer gap after a long disconnect — reload persisted state and re-attach.
-    reloadAndReattach(r.conversationId);
+    // Buffer gap after a long disconnect — reload persisted state and re-attach
+    // right after the oldest event the server still holds.
+    reloadAndReattach(r.conversationId, d.oldest);
   } else if (event === 'idle') {
     // Nothing is running (e.g. we attached late). Drop the live bubble quietly.
     detachRun();
@@ -1626,20 +2273,31 @@ async function reloadConversation(convId) {
   if (convId !== state.currentId) return;
   try {
     const fresh = await api(`/conversations/${convId}`);
+    // The user may have switched conversations while the fetch was in flight.
+    // Re-check before painting — otherwise a slow response for the OLD chat
+    // overwrites the NEW chat currently on screen (message bleed).
+    if (convId !== state.currentId) return;
     state.messages = fresh.messages || [];
+    state.fileChanges = await fetchFileChanges(convId);
+    if (convId !== state.currentId) return;
     renderMessages();
   } catch {
     /* ignore */
   }
 }
 
-/** After a buffer gap: reload persisted state, then resume if still running. */
-async function reloadAndReattach(convId) {
+/**
+ * After a buffer gap: reload persisted state, then resume if still running.
+ * `oldest` is the first event the server still retains, so resuming from
+ * `oldest - 1` continues without re-rendering the truncated prefix.
+ */
+async function reloadAndReattach(convId, oldest = 0) {
   if (convId !== state.currentId) return;
   const wasLastId = run ? run.lastEventId : 0;
+  const resumeFrom = Number(oldest) > 0 ? Number(oldest) - 1 : wasLastId;
   detachRun();
   await reloadConversation(convId);
-  if (runningIds.has(convId)) attachToRun(convId, wasLastId);
+  if (runningIds.has(convId)) attachToRun(convId, resumeFrom, runStartedAt.get(convId));
 }
 
 /** Tear down the live viewer (does NOT stop the server-side run). */
@@ -1688,8 +2346,101 @@ function updateAppBusy() {
   if (sp) sp.classList.toggle('hidden', !busy);
 }
 
-function regenerate() {
-  sendMessage(true);
+/** True when an assistant reply exists after this user message. */
+function hasReplyAfter(m) {
+  return state.messages.some((x) => x.role === 'assistant' && x.id > m.id);
+}
+
+/**
+ * Re-answer one user message: drop everything after it, then run the turn
+ * again without adding a second copy of the question. The server only removes
+ * a trailing assistant row that sits *after* the last user message, so an older
+ * turn's reply is never deleted by mistake.
+ */
+async function regenerateFrom(m) {
+  if (state.streaming) return;
+  if (!state.currentId) return;
+  try {
+    await api(`/conversations/${state.currentId}/truncate-after`, {
+      method: 'POST',
+      body: { message_id: m.id + 1 }
+    });
+    state.messages = state.messages.filter((x) => x.id <= m.id);
+    state.fileChanges = (state.fileChanges || []).filter((c) => c.message_id <= m.id);
+    renderMessages();
+    await sendMessage(true);
+  } catch (e) {
+    toast(e.message, true);
+  }
+}
+
+/**
+ * Continue the last assistant reply without adding a visible user turn.
+ * Returns true when the run was started, false when nothing was sent (so a
+ * caller can restore its button instead of leaving it disabled).
+ */
+async function continueReply() {
+  if (state.streaming) return false;
+  if (!state.currentId) {
+    toast('Open a chat first.', true);
+    return false;
+  }
+  if (state.messages[state.messages.length - 1]?.role !== 'assistant') {
+    toast('The last message is not a reply to continue.', true);
+    return false;
+  }
+  const convId = state.currentId;
+  let ack;
+  try {
+    ack = await api('/chat', {
+      method: 'POST',
+      body: {
+        conversation_id: convId,
+        continue: true,
+        use_tools: $('#chk-tools').checked,
+        model: $('#sel-model').value || undefined,
+        reasoning_effort: $('#sel-effort')?.value || undefined
+      }
+    });
+  } catch (e) {
+    toast(e.message, true);
+    return false;
+  }
+  if (ack && ack.started_at) runStartedAt.set(convId, ack.started_at);
+  attachToRun(convId, 0, ack && ack.started_at);
+  return true;
+}
+
+/** Download this conversation as Markdown (default) or JSON. */
+async function exportConversation(format = 'md') {
+  if (!state.currentId) {
+    toast('Open a chat first.', true);
+    return;
+  }
+  const kind = format === 'json' ? 'json' : 'md';
+  try {
+    const res = await fetch(`/api/conversations/${state.currentId}/export?format=${kind}`);
+    if (!res.ok) {
+      let msg = `${res.status} ${res.statusText}`;
+      try { msg = (await res.json()).error || msg; } catch { /* not JSON */ }
+      if (res.status === 401) showLogin();
+      throw new Error(msg);
+    }
+    const blob = await res.blob();
+    const disposition = res.headers.get('Content-Disposition') || '';
+    const match = disposition.match(/filename="([^"]+)"/i);
+    const a = document.createElement('a');
+    const url = URL.createObjectURL(blob);
+    a.href = url;
+    a.download = match ? match[1] : `chat.${kind}`;
+    document.body.append(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    toast(`Exported as ${kind === 'json' ? 'JSON' : 'Markdown'}`);
+  } catch (e) {
+    toast(`Export failed: ${e.message}`, true);
+  }
 }
 /* ───────────────────────── Composer ───────────────────────── */
 function autoresize() {
@@ -1794,9 +2545,11 @@ function pendingImage() {
   return value && value !== 'data:;base64,' ? value : null;
 }
 
-/** Save the attachments (images included) into the chat's working folder. */
+/** Save the non-image attachments into the chat's working folder. Images are
+ *  sent to the model as vision input instead, so they are not written to disk
+ *  here (writing them made the model run code to read the file). */
 async function uploadAttachments() {
-  const files = state.attachments.filter((a) => a.data);
+  const files = state.attachments.filter((a) => a.data && a.kind !== 'image');
   const saved = [];
   for (const a of files) {
     a.uploading = true;
@@ -1832,19 +2585,18 @@ function commitImageUrl() {
 
 function updateToolsHint() {
   const c = current();
-  const off = new Set();
-  if (c) {
-    if (!Number(c.files_enabled ?? 1)) off.add('files');
-    if (!Number(c.shell_enabled ?? 1)) off.add('shell');
-  }
-  const visible = state.mcp.filter((s) => s.status === 'connected' && !off.has(s.builtin_key));
+  const off = chatOffServers(c);
+  const isOff = (s) => off.has(s.name) || (!!s.builtin_key && off.has(s.builtin_key));
+  const connected = state.mcp.filter((s) => s.enabled && s.status === 'connected');
+  const visible = connected.filter((s) => !isOff(s));
   const n = visible.reduce((a, s) => a + s.tools.length, 0);
   const bits = [
     n
       ? `${n} tool${n === 1 ? '' : 's'} from ${visible.length} MCP server${visible.length === 1 ? '' : 's'}`
       : 'no MCP tools connected'
   ];
-  if (off.size) bits.push(`${[...off].join(' + ')} off for this chat`);
+  const offNames = connected.filter(isOff).map((s) => s.name);
+  if (offNames.length) bits.push(`${offNames.join(' + ')} off for this chat`);
   else if (c) bits.push(c.approval_mode === 'auto' ? 'auto-approve' : 'ask before changes');
   $('#hint-tools').textContent = bits.join(' · ');
 }
@@ -1852,10 +2604,11 @@ function updateToolsHint() {
 /* ───────────────────────── Health ───────────────────────── */
 async function refreshHealth() {
   const pill = $('#server-status');
-  const txt = $('#server-status-text');
   pill.innerHTML = '<span class="dot dot-grey"></span><span>checking…</span>';
   try {
-    const r = await api('/settings/test', { method: 'POST', body: {} });
+    // Read-only ping: available to every signed-in user, unlike the admin-only
+    // settings test (which accepts unsaved base URLs/keys).
+    const r = await api('/settings/health');
     if (r.ok) {
       pill.innerHTML = `<span class="dot dot-green"></span><span>${r.modelCount} model${r.modelCount === 1 ? '' : 's'} online</span>`;
       if (r.models?.length) fillModelOptions(r.models);
@@ -1874,6 +2627,124 @@ function openModal(sel) {
   $(sel).showModal();
 }
 
+/* ───────────────────────── Command palette (Ctrl/Cmd+K) ───────────────────────── */
+let paletteItems = [];
+let paletteIndex = 0;
+
+/** Everything the palette can run, plus a jump list of conversations. */
+function paletteEntries() {
+  const q = ($('#palette-input')?.value || '').trim().toLowerCase();
+  const commands = [
+    { group: 'Actions', icon: '＋', title: 'New chat', hint: 'Ctrl+N', run: () => newConversation() },
+    { group: 'Actions', icon: '☰', title: 'Toggle sidebar', run: () => toggleSidebar() },
+    { group: 'Actions', icon: '🌗', title: `Theme: ${storedTheme} (cycle)`, run: () => cycleTheme() },
+    { group: 'Actions', icon: '⤓', title: 'Compact context now', run: () => compactNow() },
+    { group: 'Actions', icon: '⚙', title: 'Open settings', run: () => $('#btn-open-settings').click() },
+    { group: 'Actions', icon: '🎭', title: 'Open personas', run: () => $('#btn-open-prompts').click() },
+    { group: 'Actions', icon: '🔌', title: 'Open MCP servers', run: () => $('#btn-open-mcp').click() },
+    { group: 'Actions', icon: '⎋', title: 'Sign out', run: () => doLogout() }
+  ];
+  if (state.currentId) {
+    if (state.messages[state.messages.length - 1]?.role === 'assistant') {
+      commands.push({ group: 'Actions', icon: '▶', title: 'Continue the last reply', run: () => continueReply() });
+    }
+    commands.push(
+      { group: 'Export', icon: '⤓', title: 'Export this chat as Markdown', run: () => exportConversation('md') },
+      { group: 'Export', icon: '{ }', title: 'Export this chat as JSON', run: () => exportConversation('json') }
+    );
+  }
+  const chats = state.conversations.map((c) => ({
+    group: 'Chats',
+    icon: '💬',
+    title: c.title || 'Untitled',
+    hint: `${c.message_count || 0} msg`,
+    run: () => openConversation(c.id)
+  }));
+  const all = [...commands, ...chats];
+  const matches = q
+    ? all.filter((it) => it.title.toLowerCase().includes(q) || (it.group || '').toLowerCase().includes(q))
+    : all;
+  return matches.slice(0, 60);
+}
+
+function renderPalette() {
+  paletteItems = paletteEntries();
+  if (paletteIndex >= paletteItems.length) paletteIndex = Math.max(0, paletteItems.length - 1);
+  const list = $('#palette-list');
+  list.innerHTML = '';
+  if (!paletteItems.length) {
+    list.append(el('div', { class: 'palette-empty' }, 'No matches'));
+    return;
+  }
+  let lastGroup = null;
+  paletteItems.forEach((item, i) => {
+    if (item.group !== lastGroup) {
+      list.append(el('div', { class: 'palette-group' }, item.group));
+      lastGroup = item.group;
+    }
+    list.append(
+      el(
+        'div',
+        {
+          class: `palette-item${i === paletteIndex ? ' active' : ''}`,
+          role: 'option',
+          'aria-selected': i === paletteIndex ? 'true' : 'false',
+          onclick: () => runPaletteItem(i)
+        },
+        el('span', { class: 'pi-ico' }, item.icon),
+        el('span', { class: 'pi-title' }, item.title),
+        item.hint ? el('span', { class: 'pi-hint' }, item.hint) : null
+      )
+    );
+  });
+  list.querySelector('.palette-item.active')?.scrollIntoView({ block: 'nearest' });
+}
+
+function runPaletteItem(i) {
+  const item = paletteItems[i];
+  if (!item) return;
+  closePalette();
+  // Let the dialog finish closing before an action opens another one.
+  setTimeout(() => {
+    try { item.run(); } catch (e) { toast(e.message, true); }
+  }, 0);
+}
+
+function openPalette() {
+  if (!state.currentUser) return;
+  const dlg = $('#dlg-palette');
+  if (!dlg || dlg.open) return;
+  const input = $('#palette-input');
+  input.value = '';
+  paletteIndex = 0;
+  renderPalette();
+  dlg.showModal();
+  input.focus();
+}
+
+function closePalette() {
+  const dlg = $('#dlg-palette');
+  if (dlg?.open) dlg.close();
+}
+
+function onPaletteKey(e) {
+  if (e.key === 'ArrowDown') {
+    e.preventDefault();
+    if (paletteItems.length) paletteIndex = (paletteIndex + 1) % paletteItems.length;
+    renderPalette();
+  } else if (e.key === 'ArrowUp') {
+    e.preventDefault();
+    if (paletteItems.length) paletteIndex = (paletteIndex - 1 + paletteItems.length) % paletteItems.length;
+    renderPalette();
+  } else if (e.key === 'Enter') {
+    e.preventDefault();
+    runPaletteItem(paletteIndex);
+  } else if (e.key === 'Escape') {
+    e.preventDefault();
+    closePalette();
+  }
+}
+
 // Scroll an open dialog to one of its sections (used by the MCP shortcut).
 function scrollToSection(sel) {
   const target = $(sel);
@@ -1887,6 +2758,7 @@ function scrollToSection(sel) {
 
 async function saveSettings(e) {
   e?.preventDefault();
+  if (adminOnly()) return;
   const body = {
     api_base_url: $('#set-api_base_url').value.trim(),
     model: $('#set-model').value.trim(),
@@ -1898,7 +2770,8 @@ async function saveSettings(e) {
     context_compress_at: $('#set-context_compress_at').value.trim(),
     context_keep: $('#set-context_keep').value.trim(),
     builtin_shell_timeout: $('#set-builtin_shell_timeout').value.trim() || '120',
-    aitemp_root: $('#set-aitemp_root').value.trim()
+    aitemp_root: $('#set-aitemp_root').value.trim(),
+    allow_registration: $('#set-allow_registration')?.checked ? '1' : '0'
   };
   const key = $('#set-api_key').value.trim();
   if (key) body.api_key = key;
@@ -1913,6 +2786,7 @@ async function saveSettings(e) {
 }
 
 async function testConnection() {
+  if (adminOnly()) return;
   const out = $('#test-result');
   out.classList.remove('hidden');
   out.textContent = 'Testing…';
@@ -1929,6 +2803,7 @@ async function testConnection() {
 }
 
 async function fetchModels() {
+  if (adminOnly()) return;
   const hint = $('#models-hint');
   hint.textContent = 'Fetching…';
   try {
@@ -2033,21 +2908,74 @@ async function deletePrompt(id) {
 /* ───────────────────────── MCP modal ───────────────────────── */
 let editingMcpId = null;
 
+/** Names of MCP servers the current chat has switched off. */
+function chatOffServers(c) {
+  const off = new Set();
+  if (!c) return off;
+  if (!Number(c.files_enabled ?? 1)) off.add('files');
+  if (!Number(c.shell_enabled ?? 1)) off.add('shell');
+  let names = [];
+  try {
+    names = JSON.parse(c.mcp_disabled || '[]');
+  } catch {
+    names = [];
+  }
+  if (Array.isArray(names)) for (const n of names) off.add(String(n));
+  return off;
+}
+
+/** Whether this chat has this server switched off. */
+function serverOffForChat(s, c) {
+  const off = chatOffServers(c);
+  return off.has(s.name) || (!!s.builtin_key && off.has(s.builtin_key));
+}
+
+/**
+ * Switch one MCP server on/off for the current chat.
+ * Built-in sets live in their own columns; custom servers are a JSON list.
+ */
+async function setServerEnabled(server, on) {
+  const c = current();
+  if (!c) return;
+  const key = server.builtin_key === 'files' || server.builtin_key === 'shell' ? `${server.builtin_key}_enabled` : null;
+  if (key) {
+    await setChatOption({ [key]: on ? 1 : 0 });
+    return;
+  }
+  let names = [];
+  try {
+    names = JSON.parse(c.mcp_disabled || '[]');
+  } catch {
+    names = [];
+  }
+  const set = new Set(Array.isArray(names) ? names.map(String) : []);
+  if (on) set.delete(server.name);
+  else set.add(server.name);
+  try {
+    const updated = await api(`/conversations/${c.id}`, { method: 'PATCH', body: { mcp_disabled: [...set] } });
+    Object.assign(c, updated);
+    renderPlusMcp();
+    updateToolsHint();
+    updateChatSub();
+  } catch (e) {
+    toast(e.message, true);
+    renderPlusMcp();
+  }
+}
+
 /**
  * Compact MCP server status lists shown inside the "+" menu, right below the
  * MCP tools toggle: built-in servers (files / shell) first, then servers the
- * user added in Settings. Each row shows a status dot, the name and how many
- * tools it contributes to this chat.
+ * user added in Settings. Each row shows a status dot, the name, how many
+ * tools it contributes to this chat, and a switch that turns that one server
+ * on or off for this chat only.
  */
 function renderPlusMcp() {
   const c = current();
-  const off = new Set();
-  if (c) {
-    if (!Number(c.files_enabled ?? 1)) off.add('files');
-    if (!Number(c.shell_enabled ?? 1)) off.add('shell');
-  }
+  const off = chatOffServers(c);
   const row = (s) => {
-    const disabled = !s.enabled || off.has(s.builtin_key);
+    const chatOff = off.has(s.name) || (!!s.builtin_key && off.has(s.builtin_key));
+    const disabled = !s.enabled || chatOff;
     const dot = disabled
       ? 'dot-grey'
       : s.status === 'connected'
@@ -2056,10 +2984,23 @@ function renderPlusMcp() {
           ? 'dot-red'
           : 'dot-grey';
     const count = s.status === 'connected' && !disabled ? `${s.tools?.length || 0} tools` : '';
-    return el('div', { class: 'pm-mcp-item', title: s.error || s.name },
+    const toggle = el('input', {
+      type: 'checkbox',
+      class: 'switch',
+      title: s.enabled ? `Use ${s.name} in this chat` : `${s.name} is switched off in Settings`,
+      'aria-label': `${s.name} in this chat`,
+      disabled: s.enabled ? null : 'disabled'
+    });
+    toggle.checked = !!s.enabled && !chatOff;
+    toggle.onchange = () => setServerEnabled(s, toggle.checked);
+    return el('label', {
+      class: `pm-mcp-item${chatOff ? ' off' : ''}`,
+      title: s.error || (s.enabled ? `Use ${s.name} in this chat` : `${s.name} is switched off in Settings`)
+    },
       el('span', { class: `dot ${dot}` }),
       el('span', { class: 'pm-mcp-name' }, s.name),
-      el('span', { class: 'pm-mcp-count' }, count)
+      el('span', { class: 'pm-mcp-count' }, count),
+      toggle
     );
   };
   const builtin = state.mcp.filter((s) => s.builtin);
@@ -2169,6 +3110,7 @@ function parseJsonField(value, fallback, label) {
 }
 
 async function saveMcp() {
+  if (adminOnly()) return;
   const out = $('#mcp-result');
   out.classList.remove('hidden');
   out.textContent = 'Saving and connecting…';
@@ -2199,6 +3141,7 @@ async function saveMcp() {
 }
 
 async function connectMcp(id) {
+  if (adminOnly()) return;
   try {
     const r = await api(`/mcp/${id}/connect`, { method: 'POST' });
     toast(`connected: ${r.toolCount} tool(s)`);
@@ -2209,6 +3152,7 @@ async function connectMcp(id) {
 }
 
 async function toggleMcp(id, enabled) {
+  if (adminOnly()) return;
   try {
     await api(`/mcp/${id}`, { method: 'PUT', body: { enabled } });
     toast(enabled ? 'Server switched on' : 'Server switched off');
@@ -2219,6 +3163,7 @@ async function toggleMcp(id, enabled) {
 }
 
 async function deleteMcp(id) {
+  if (adminOnly()) return;
   if (!confirm('Remove this MCP server?')) return;
   await api(`/mcp/${id}`, { method: 'DELETE' });
   if (editingMcpId === id) resetMcpForm();
@@ -2230,9 +3175,17 @@ async function deleteMcp(id) {
  * arrive on a dedicated stream so they survive a reload or a tab switch.
  */
 const approvalCards = new Map();
+let approvalStream = null;
 
+/**
+ * One approval stream per page. It is opened after sign-in (and closed on
+ * logout) so the login screen does not sit in an EventSource retry loop
+ * against a route that requires a session.
+ */
 function connectApprovalStream() {
+  if (approvalStream) return;
   const src = new EventSource('/api/approvals/stream');
+  approvalStream = src;
   src.addEventListener('approval_request', (e) => showApproval(JSON.parse(e.data)));
   src.addEventListener('approval_resolved', (e) => {
     const d = JSON.parse(e.data);
@@ -2242,6 +3195,12 @@ function connectApprovalStream() {
   src.onerror = () => {
     // EventSource reconnects by itself; nothing to do but stop the noise.
   };
+}
+
+function disconnectApprovalStream() {
+  if (!approvalStream) return;
+  approvalStream.close();
+  approvalStream = null;
 }
 
 function showApproval(meta) {
@@ -2311,17 +3270,22 @@ function hideLogin() {
 }
 
 // Switch the overlay between "Sign in" and "Create account" (setup when first
-// user, otherwise register a new ordinary user).
+// user, otherwise register a new ordinary user). The sign-up switch is hidden
+// while registration is closed; the first account is always allowed.
 function setLoginMode(mode) {
+  const canRegister = state.needsSetup || state.openRegistration;
+  if (!canRegister) mode = 'login';
   loginMode = mode;
   const isSetup = mode === 'register' && state.needsSetup;
   $('#login-title').textContent = mode === 'register' ? (isSetup ? 'Create the admin account' : 'Create an account') : 'Sign in';
   $('#login-sub').textContent = mode === 'register'
     ? (isSetup ? 'You are the first user, so this account will be the administrator and will receive any existing chats.' : 'Choose a username and password.')
-    : 'Sign in to continue.';
+    : (canRegister ? 'Sign in to continue.' : 'Sign in to continue. New accounts are created by an admin.');
   $('#login-submit').textContent = mode === 'register' ? (isSetup ? 'Create admin account' : 'Create account') : 'Sign in';
   $('#login-switch-text').textContent = mode === 'register' ? 'Already have an account?' : 'No account?';
   $('#login-toggle').textContent = mode === 'register' ? 'Sign in' : 'Create one';
+  $('#login-switch-text').classList.toggle('hidden', !canRegister);
+  $('#login-toggle').classList.toggle('hidden', !canRegister);
   $('#login-password').autocomplete = mode === 'register' ? 'new-password' : 'current-password';
 }
 
@@ -2337,6 +3301,7 @@ async function submitLogin(e) {
     const path = loginMode === 'register' ? '/auth/register' : '/auth/login';
     const r = await api(path, { method: 'POST', body: { username, password }, __noAuthGate: true });
     state.currentUser = r.user;
+    state.needsSetup = false;
     if (loginMode === 'register' && r.claimed_conversations) {
       toast(`${r.claimed_conversations} existing chat${r.claimed_conversations === 1 ? '' : 's'} moved to your account`);
     }
@@ -2352,7 +3317,9 @@ async function submitLogin(e) {
 
 async function afterLogin() {
   renderUserChip();
+  connectApprovalStream();
   await Promise.all([loadSettings(), loadPrompts(), loadConversations(), loadMcp()]);
+  applyAdminUi();
   fillModelOptions(state.settings.model ? [state.settings.model] : []);
   if (state.conversations.length) await openConversation(state.conversations[0].id);
   else { renderMessages(); renderChatOptions(); }
@@ -2371,10 +3338,41 @@ function renderUserChip() {
   $('#user-menu-name').textContent = u.username;
   $('#user-menu-role').textContent = u.is_admin ? 'admin' : 'user';
   $('#btn-manage-users').classList.toggle('hidden', !u.is_admin);
+  applyAdminUi();
+}
+
+/** Guard an action that only admins may perform. Returns true when blocked. */
+function adminOnly() {
+  if (state.currentUser?.is_admin) return false;
+  toast('Only an administrator can change that.', true);
+  return true;
+}
+
+/**
+ * Settings and MCP configuration are global (and MCP stdio servers can run any
+ * command on this machine), so ordinary users only get a read-only view.
+ * "Forget remembered approvals" stays available: grants are per user now.
+ */
+function applyAdminUi() {
+  const admin = !!state.currentUser?.is_admin;
+  for (const n of document.querySelectorAll('#settings-form input, #settings-form select, #settings-form textarea, #settings-form button')) {
+    if (n.closest('.modal-head') || n.hasAttribute('data-close') || n.id === 'btn-clear-grants') continue;
+    n.disabled = !admin;
+  }
+  $('#settings-admin-hint')?.classList.toggle('hidden', admin);
+  const pick = $('#btn-pick-workdir');
+  if (pick) {
+    pick.disabled = !admin;
+    pick.title = admin ? 'Browse the server for a folder' : 'Only an admin can browse server folders';
+  }
+  renderComposerFolder();
 }
 
 async function doLogout() {
   try { await api('/auth/logout', { method: 'POST', __noAuthGate: true }); } catch { /* ignore */ }
+  // Drop the live streams/pollers tied to the old session before the overlay.
+  disconnectApprovalStream();
+  if (authPollTimer) { clearInterval(authPollTimer); authPollTimer = null; }
   state.currentUser = null;
   state.conversations = [];
   state.messages = [];
@@ -2384,7 +3382,10 @@ async function doLogout() {
   hideUserMenu();
   loginMode = 'login';
   const st = await fetchAuthStatus().catch(() => null);
-  if (st) { state.needsSetup = st.needs_setup; }
+  if (st) {
+    state.needsSetup = st.needs_setup;
+    state.openRegistration = !!st.open_registration;
+  }
   showLogin();
 }
 
@@ -2460,11 +3461,23 @@ async function changePassword(e) {
 
 /* ───────────────────────── Wiring ───────────────────────── */
 function wire() {
+  initTheme();
   $('#btn-new-chat').onclick = () => newConversation();
   $('#empty-new')?.addEventListener('click', () => newConversation());
   $('#empty-settings')?.addEventListener('click', () => openModal('#dlg-settings'));
   $('#btn-toggle-sidebar').onclick = () => toggleSidebar();
   $('#sidebar-backdrop').onclick = () => toggleSidebar(false);
+  $('#btn-export-chat').onclick = () => exportConversation('md');
+  $('#btn-theme').onclick = () => { hideUserMenu(); cycleTheme(); };
+
+  // Command palette: filter as you type, arrows move, Enter runs, Esc closes.
+  const paletteInput = $('#palette-input');
+  paletteInput.addEventListener('input', () => { paletteIndex = 0; renderPalette(); });
+  paletteInput.addEventListener('keydown', onPaletteKey);
+  $('#dlg-palette').addEventListener('click', (e) => {
+    if (e.target === $('#dlg-palette')) closePalette();
+  });
+
   $('#conv-search').oninput = (e) => {
     state.search = e.target.value;
     renderConvList();
@@ -2484,8 +3497,11 @@ function wire() {
     if (!state.currentId) return toast('Open a chat first.', true);
     const btn = $('#btn-ai-title');
     btn.disabled = true;
-    const prev = btn.textContent;
-    btn.textContent = '⏳…';
+    // Swap only the label so the button keeps its icon and width while working.
+    const label = btn.querySelector('.hb-label');
+    const prevLabel = label ? label.textContent : btn.textContent;
+    if (label) label.textContent = '…';
+    else btn.textContent = '⏳…';
     try {
       const c = await api(`/conversations/${state.currentId}/generate-title`, { method: 'POST' });
       Object.assign(current(), c);
@@ -2495,7 +3511,8 @@ function wire() {
       toast(err.message || 'Could not generate a title.', true);
     } finally {
       btn.disabled = false;
-      btn.textContent = prev;
+      if (label) label.textContent = prevLabel;
+      else btn.textContent = prevLabel;
     }
   };
 
@@ -2587,9 +3604,10 @@ function wire() {
   });
 
   // settings
-  $('#btn-open-settings').onclick = () => {
-    loadSettings();
-    loadMcp();
+  $('#btn-open-settings').onclick = async () => {
+    await loadSettings();
+    await loadMcp();
+    applyAdminUi();
     openModal('#dlg-settings');
   };
   $('#settings-form').onsubmit = (e) => {
@@ -2742,8 +3760,34 @@ function wire() {
     b.onclick = () => b.closest('dialog').close();
   });
 
+  // Images in chat open in a fullscreen lightbox
+  const lightbox = $('#dlg-lightbox');
+  const lightboxImg = $('#lightbox-img');
+  document.addEventListener('click', (e) => {
+    const img = e.target.closest?.('#messages img');
+    if (!img || img.closest('#dlg-lightbox')) return;
+    lightboxImg.src = img.currentSrc || img.src;
+    lightboxImg.alt = img.alt || 'image';
+    lightbox.showModal();
+  });
+  // Click anywhere on the overlay (image itself or its empty margins) closes it.
+  lightbox.addEventListener('click', (e) => {
+    if (e.target === lightbox || e.target === lightboxImg) lightbox.close();
+  });
+  lightbox.addEventListener('close', () => {
+    lightboxImg.removeAttribute('src');
+  });
+
   // keyboard shortcuts
   document.addEventListener('keydown', (e) => {
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
+      e.preventDefault();
+      if ($('#dlg-palette').open) closePalette();
+      else openPalette();
+      return;
+    }
+    // The palette owns the keyboard while it is open.
+    if ($('#dlg-palette').open) return;
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'n') {
       e.preventDefault();
       newConversation();
@@ -2772,11 +3816,12 @@ function wire() {
 async function init() {
   wire();
   watchMessagesScroll();
-  connectApprovalStream();
-  // Auth gate: nothing loads until the session is verified.
+  // Auth gate: nothing loads (and no live streams open) until the session is
+  // verified.
   let status = null;
   try { status = await fetchAuthStatus(); } catch (e) { console.error(e); }
   state.needsSetup = !!status?.needs_setup;
+  state.openRegistration = !!status?.open_registration;
   if (!status?.authenticated) {
     loginMode = state.needsSetup ? 'register' : 'login';
     showLogin();

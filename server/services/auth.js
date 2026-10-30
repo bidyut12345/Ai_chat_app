@@ -22,21 +22,32 @@ const SCRYPT_R = 8;
 const SCRYPT_P = 1;
 const KEY_LEN = 64;
 
+/**
+ * Derive a key with scrypt. Async on purpose: `scryptSync` blocks the single
+ * event loop for ~100ms per call, which stalls every streaming chat while a
+ * login is being checked. Both helpers below are promise-returning.
+ */
+function derive(password, salt, keyLen, opts) {
+  return new Promise((resolve, reject) => {
+    crypto.scrypt(String(password), salt, keyLen, opts, (err, key) => (err ? reject(err) : resolve(key)));
+  });
+}
+
 /** Hash a password into a self-describing string (salt + params + digest). */
-export function hashPassword(password) {
+export async function hashPassword(password) {
   const salt = crypto.randomBytes(16);
-  const derived = crypto.scryptSync(String(password), salt, KEY_LEN, { N: SCRYPT_N, r: SCRYPT_R, p: SCRYPT_P });
+  const derived = await derive(password, salt, KEY_LEN, { N: SCRYPT_N, r: SCRYPT_R, p: SCRYPT_P });
   return `scrypt$${SCRYPT_N}$${SCRYPT_R}$${SCRYPT_P}$${salt.toString('hex')}$${derived.toString('hex')}`;
 }
 
 /** Constant-time verify a password against a stored hash. */
-export function verifyPassword(password, stored) {
+export async function verifyPassword(password, stored) {
   try {
     const [scheme, N, r, p, saltHex, hashHex] = String(stored).split('$');
     if (scheme !== 'scrypt') return false;
     const salt = Buffer.from(saltHex, 'hex');
     const expected = Buffer.from(hashHex, 'hex');
-    const derived = crypto.scryptSync(String(password), salt, expected.length, { N: Number(N), r: Number(r), p: Number(p) });
+    const derived = await derive(password, salt, expected.length, { N: Number(N), r: Number(r), p: Number(p) });
     return crypto.timingSafeEqual(derived, expected);
   } catch {
     return false;
@@ -127,12 +138,12 @@ export function sessionCookie(token, { maxAgeDays = SESSION_TTL_DAYS, secure = f
 
 // A single default user used only when AUTH_DISABLED=1, so conversations still
 // have an owner in the API test suites.
-function bootstrapUser() {
+async function bootstrapUser() {
   const existing = db.prepare('SELECT * FROM users ORDER BY id LIMIT 1').get();
   if (existing) return publicUser(existing);
   const info = db
     .prepare('INSERT INTO users (username, password_hash, is_admin) VALUES (?, ?, 1)')
-    .run('_local', hashPassword(crypto.randomBytes(16).toString('hex')));
+    .run('_local', await hashPassword(crypto.randomBytes(16).toString('hex')));
   return publicUser(db.prepare('SELECT * FROM users WHERE id = ?').get(info.lastInsertRowid));
 }
 
@@ -140,12 +151,15 @@ function bootstrapUser() {
  * Populate req.user from the session cookie (no auth required). Used to scope
  * reads even on optional-auth routes.
  */
-export function attachUser(req, res, next) {
+export async function attachUser(req, res, next) {
   if (AUTH_DISABLED) {
     req.cookiesToken = null;
-    req.user = bootstrapUser();
-    next();
-    return;
+    try {
+      req.user = await bootstrapUser();
+    } catch (e) {
+      return next(e);
+    }
+    return next();
   }
   req.cookiesToken = readSessionToken(req);
   req.user = getUserByToken(req.cookiesToken);
@@ -163,14 +177,4 @@ export function requireAdmin(req, res, next) {
   if (!req.user) return res.status(401).json({ error: 'Not signed in', auth: true });
   if (!req.user.is_admin) return res.status(403).json({ error: 'Admin only' });
   next();
-}
-
-/**
- * Fetch a conversation ONLY if it belongs to the signed-in user. Returns the
- * row or null (caller should 404). Centralizes ownership so no route forgets.
- */
-export function getOwnedConversation(userId, conversationId) {
-  const id = Number(conversationId);
-  if (!Number.isFinite(id)) return null;
-  return db.prepare('SELECT * FROM conversations WHERE id = ? AND user_id = ?').get(id, userId) || null;
 }

@@ -9,6 +9,14 @@ import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
 import { resolvePath, PolicyError } from './policy.js';
+import { trackFile } from '../fileChanges.js';
+import {
+  collectEntries,
+  writeZipFile,
+  readZipEntries,
+  readZipEntryData,
+  safeEntryName
+} from './zip.js';
 
 const READ_CAP_BYTES = 200000;
 const LIST_CAP = 2000;
@@ -143,11 +151,13 @@ export const fileTools = [
     async handler(args) {
       const file = resolvePath(str(args.path));
       const content = typeof args.content === 'string' ? args.content : '';
-      await fsp.mkdir(path.dirname(file), { recursive: true });
-      await fsp.appendFile(file, args.append ? content : '', 'utf8');
-      if (args.append) return `Appended ${fmtBytes(Buffer.byteLength(content))} to ${file}`;
-      await fsp.writeFile(file, content, 'utf8');
-      return `Wrote ${fmtBytes(Buffer.byteLength(content))} to ${file}`;
+      return trackFile(file, async () => {
+        await fsp.mkdir(path.dirname(file), { recursive: true });
+        await fsp.appendFile(file, args.append ? content : '', 'utf8');
+        if (args.append) return `Appended ${fmtBytes(Buffer.byteLength(content))} to ${file}`;
+        await fsp.writeFile(file, content, 'utf8');
+        return `Wrote ${fmtBytes(Buffer.byteLength(content))} to ${file}`;
+      });
     }
   },
 
@@ -179,8 +189,10 @@ export const fileTools = [
         throw new PolicyError(`Target snippet occurs ${count} times in ${file}. Provide more surrounding context to match uniquely, or set allow_multiple: true.`);
       }
       const updated = args.allow_multiple ? text.replaceAll(target, replacement) : text.replace(target, replacement);
-      await fsp.writeFile(file, updated, 'utf8');
-      return `Successfully replaced ${count} occurrence(s) in ${file}`;
+      return trackFile(file, async () => {
+        await fsp.writeFile(file, updated, 'utf8');
+        return `Successfully replaced ${count} occurrence(s) in ${file}`;
+      });
     }
   },
 
@@ -215,13 +227,15 @@ export const fileTools = [
     async handler(args) {
       const target = resolvePath(str(args.path), { mustExist: true });
       const st = await fsp.stat(target);
-      if (st.isDirectory()) {
-        if (!args.recursive) throw new PolicyError(`${target} is a directory. Pass recursive: true to delete it and its contents.`);
-        await fsp.rm(target, { recursive: true, force: true });
-        return `Deleted directory tree ${target}`;
-      }
-      await fsp.rm(target, { force: true });
-      return `Deleted ${target}`;
+      return trackFile(target, async () => {
+        if (st.isDirectory()) {
+          if (!args.recursive) throw new PolicyError(`${target} is a directory. Pass recursive: true to delete it and its contents.`);
+          await fsp.rm(target, { recursive: true, force: true });
+          return `Deleted directory tree ${target}`;
+        }
+        await fsp.rm(target, { force: true });
+        return `Deleted ${target}`;
+      });
     }
   },
 
@@ -240,9 +254,11 @@ export const fileTools = [
     async handler(args) {
       const src = resolvePath(str(args.from), { mustExist: true });
       const dest = resolvePath(str(args.to));
-      await fsp.mkdir(path.dirname(dest), { recursive: true });
-      await fsp.rename(src, dest);
-      return `Moved ${src} -> ${dest}`;
+      return trackFile([src, dest], async () => {
+        await fsp.mkdir(path.dirname(dest), { recursive: true });
+        await fsp.rename(src, dest);
+        return `Moved ${src} -> ${dest}`;
+      });
     }
   },
 
@@ -262,8 +278,10 @@ export const fileTools = [
     async handler(args) {
       const src = resolvePath(str(args.from), { mustExist: true });
       const dest = resolvePath(str(args.to));
-      await fsp.cp(src, dest, { recursive: !!args.recursive });
-      return `Copied ${src} -> ${dest}`;
+      return trackFile(dest, async () => {
+        await fsp.cp(src, dest, { recursive: !!args.recursive });
+        return `Copied ${src} -> ${dest}`;
+      });
     }
   },
 
@@ -386,6 +404,139 @@ export const fileTools = [
       }
       if (!hits.length) return `No matches for "${q}" (scanned ${filesScanned} file(s) under ${root})`;
       return `${hits.length} match(es)${hits.length >= cap ? ' (capped)' : ''}:\n${hits.join('\n')}`;
+    }
+  },
+
+  {
+    name: 'zip',
+    destructive: true,
+    description: 'Compress files or folders into a .zip archive. Returns the archive path and size. Folders keep their name as the top-level entry; node_modules, .git and build output are skipped.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'Destination .zip file. ".zip" is added when the name has no extension.' },
+        sources: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Files or folders to include. Defaults to the whole working folder.'
+        },
+        overwrite: { type: 'boolean', description: 'Replace an existing archive. Default false.' }
+      },
+      required: ['path']
+    },
+    async handler(args) {
+      let dest = resolvePath(str(args.path));
+      if (!/\.zip$/i.test(dest)) dest += '.zip';
+      if (fs.existsSync(dest) && !args.overwrite) {
+        throw new PolicyError(`${dest} already exists. Pass overwrite: true to replace it.`);
+      }
+      const rawSources = Array.isArray(args.sources) ? args.sources : args.sources ? [args.sources] : ['.'];
+      const sources = rawSources.map((s) => resolvePath(str(s), { mustExist: true }));
+      const { entries, skipped } = await collectEntries(sources, { exclude: new Set([path.resolve(dest)]) });
+      if (!entries.length) throw new PolicyError('Nothing to compress.');
+      const result = await writeZipFile(dest, entries);
+      const notes = [];
+      if (skipped.tooBig) notes.push(`${skipped.tooBig} file(s) skipped (archive size cap)`);
+      if (skipped.tooMany) notes.push(`${skipped.tooMany} file(s) skipped (entry cap)`);
+      if (skipped.unreadable) notes.push(`${skipped.unreadable} unreadable item(s) skipped`);
+      return `Created ${dest} (${result.entries} entries, ${fmtBytes(result.size)})${notes.length ? `\n${notes.join('\n')}` : ''}`;
+    }
+  },
+
+  {
+    name: 'unzip',
+    destructive: true,
+    description: 'Extract a .zip archive into a folder. Entry paths that would escape the destination are refused. Existing files are skipped unless overwrite is true.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'The .zip file to extract.' },
+        to: { type: 'string', description: 'Destination folder. Defaults to a folder named after the archive next to it.' },
+        overwrite: { type: 'boolean', description: 'Overwrite existing files. Default false.' }
+      },
+      required: ['path']
+    },
+    async handler(args) {
+      const zipPath = resolvePath(str(args.path), { mustExist: true });
+      const st = await fsp.stat(zipPath);
+      if (!st.isFile()) throw new PolicyError(`${zipPath} is not a file.`);
+      if (st.size > 512 * 1024 * 1024) throw new PolicyError('Archive is too large to extract (512 MB max).');
+      const buf = await fsp.readFile(zipPath);
+      const entries = readZipEntries(buf);
+      const dest = args.to
+        ? resolvePath(str(args.to))
+        : path.join(path.dirname(zipPath), path.basename(zipPath).replace(/\.zip$/i, ''));
+      // Validate the destination itself against the chat's policy (it may not
+      // exist yet, which resolvePath allows).
+      resolvePath(dest);
+
+      const dirs = [];
+      const files = [];
+      const skipped = [];
+      for (const entry of entries) {
+        const safe = safeEntryName(entry.name);
+        if (!safe) {
+          skipped.push(`${entry.name} (unsafe path)`);
+          continue;
+        }
+        const abs = path.resolve(dest, safe);
+        const rel = path.relative(dest, abs);
+        if (!rel || rel.startsWith('..') || path.isAbsolute(rel)) {
+          skipped.push(`${entry.name} (outside target)`);
+          continue;
+        }
+        if (entry.name.endsWith('/')) dirs.push(abs);
+        else files.push({ entry, abs });
+      }
+
+      let written = 0;
+      await trackFile(files.map((f) => f.abs), async () => {
+        for (const dir of dirs) await fsp.mkdir(dir, { recursive: true });
+        for (const { entry, abs } of files) {
+          if (!args.overwrite && fs.existsSync(abs)) {
+            skipped.push(`${entry.name} (exists)`);
+            continue;
+          }
+          const data = readZipEntryData(buf, entry);
+          await fsp.mkdir(path.dirname(abs), { recursive: true });
+          await fsp.writeFile(abs, data);
+          written++;
+        }
+      });
+      if (!written && !skipped.length) throw new PolicyError('The archive has no files.');
+      const notes = skipped.length ? `\nSkipped ${skipped.length}:\n${skipped.slice(0, 20).join('\n')}${skipped.length > 20 ? '\n…' : ''}` : '';
+      return `Extracted ${written} file(s) to ${dest}${notes}`;
+    }
+  },
+
+  {
+    name: 'share_workspace',
+    destructive: true,
+    description: 'Compress the whole chat working folder into a downloadable .zip archive. Use this when the user asks to share, export or download the workspace. The archive is returned as a produced file the user can download.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'Optional archive path. Default "workspace.zip" in the working folder.' },
+        overwrite: { type: 'boolean', description: 'Replace an existing archive. Default true.' }
+      }
+    },
+    async handler(args) {
+      const root = resolvePath('.', { mustExist: true });
+      let dest = resolvePath(str(args.path) || 'workspace.zip');
+      if (!/\.zip$/i.test(dest)) dest += '.zip';
+      if (fs.existsSync(dest) && args.overwrite === false) {
+        throw new PolicyError(`${dest} already exists. Pass overwrite: true to replace it.`);
+      }
+      const { entries, skipped } = await collectEntries([root], {
+        flat: true,
+        exclude: new Set([path.resolve(dest)])
+      });
+      if (!entries.length) throw new PolicyError('The workspace is empty — nothing to share.');
+      const result = await writeZipFile(dest, entries);
+      const notes = [];
+      if (skipped.tooBig) notes.push(`${skipped.tooBig} file(s) skipped (archive size cap)`);
+      if (skipped.tooMany) notes.push(`${skipped.tooMany} file(s) skipped (entry cap)`);
+      return `Shared the workspace as ${dest} (${result.entries} entries, ${fmtBytes(result.size)}). The archive is ready to download.${notes.length ? `\n${notes.join('\n')}` : ''}`;
     }
   }
 ];

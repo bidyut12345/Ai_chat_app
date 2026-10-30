@@ -14,6 +14,46 @@
       .replace(/'/g, '&#39;');
   }
 
+  // Images the agent produced are local filesystem paths (C:\dir\a.png,
+  // ./a.png, /tmp/a.png, a.png). A browser cannot fetch those, so they are
+  // routed through the conversation file API exposed by app.js as
+  // window.conversationFileUrl(path).
+  const IMAGE_EXT_RE = /\.(png|jpe?g|gif|webp|bmp|avif|ico|svg)$/i;
+
+  function isLocalImagePath(t) {
+    if (!IMAGE_EXT_RE.test(t)) return false;
+    if (/^data:/i.test(t)) return false;
+    // A real scheme has 2+ chars before the colon. A single letter is a
+    // Windows drive letter ("C:\..."), not a scheme.
+    if (/^[a-z][a-z0-9+.-]+:/i.test(t) && !/^[a-z]:[\\/]/i.test(t)) return false;
+    if (/[\\/]/.test(t)) {
+      const first = t.split(/[\\/]/)[0];
+      if (first === '' || first === '.' || first === '..') return true;
+      // "example.com/cat.png": the first segment is a hostname, so remote.
+      if (/^[A-Za-z0-9_-]+(\.[A-Za-z0-9_-]+)+$/.test(first)) return false;
+      return true;
+    }
+    // A bare "photo.png" is a file, not a host (hosts need a dotted TLD).
+    return true;
+  }
+
+  function imageUrl(u) {
+    const t = String(u || '').trim().replace(/&amp;/g, '&');
+    if (/^data:image\/[a-z0-9.+-]+;base64,[a-z0-9+/=\s]+$/i.test(t)) return t;
+    if (/^https?:\/\//i.test(t)) return t;
+    if (isLocalImagePath(t)) {
+      const api = global.conversationFileUrl;
+      if (typeof api !== 'function') return '#';
+      try {
+        return api(t) || '#';
+      } catch {
+        return '#';
+      }
+    }
+    if (/^[\w.-]+\.[a-z]{2,}(\/|$)/i.test(t)) return `https://${t}`;
+    return '#';
+  }
+
   function safeUrl(u) {
     const t = String(u || '').trim();
     if (/^(https?:|mailto:|#|\/)/i.test(t)) return t;
@@ -31,7 +71,7 @@
     });
     // images then links
     s = s.replace(/!\[([^\]]*)\]\(([^)\s]+)(?:\s+"[^"]*")?\)/g, (_, alt, url) => {
-      const u = safeUrl(url.replace(/&amp;/g, '&'));
+      const u = imageUrl(url.replace(/&amp;/g, '&'));
       return u === '#' ? escapeHtml(alt) : `<img src="${u}" alt="${alt}" loading="lazy">`;
     });
     s = s.replace(/\[([^\]]+)\]\(([^)\s]+)(?:\s+"[^"]*")?\)/g, (_, text, url) => {

@@ -16,6 +16,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { db } from '../db.js';
 import { runWithPolicy, resolvePath, fileRoot, PolicyError } from '../services/builtin/policy.js';
+import { diffLines, changeStats, isNoopChange, revertChange } from '../services/fileChanges.js';
 
 export const MAX_UPLOAD_BYTES = 100 * 1024 * 1024;
 const MAX_LIST = 3000;
@@ -25,6 +26,20 @@ const TEXTISH = /\.(txt|md|markdown|json|jsonl|csv|tsv|ya?ml|toml|ini|cfg|conf|l
 
 const isTextish = (p) => TEXTISH.test(p) || /(^|[/\\])(dockerfile|makefile|readme|license)(\..*)?$/i.test(p);
 
+// Image types we can render inline in an <img> tag. Served with a real
+// Content-Type (not octet-stream) and an "inline" disposition so the browser
+// displays them instead of downloading.
+const IMAGE_MIME = {
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.gif': 'image/gif',
+  '.webp': 'image/webp',
+  '.svg': 'image/svg+xml',
+  '.bmp': 'image/bmp',
+  '.avif': 'image/avif',
+  '.ico': 'image/x-icon'
+};
 function entryOf(dir, name) {
   const full = path.join(dir, name);
   try {
@@ -194,7 +209,22 @@ conversationFsRouter.get('/raw', async (req, res) => {
       const content = await fsp.readFile(abs, 'utf8');
       return res.json({ path: abs, name, size: st.size, text: content });
     }
-    res.setHeader('Content-Type', 'application/octet-stream');
+    // Images are sent with their real MIME type and an `inline` disposition so
+    // the UI can show them in an <img> (preview + fullscreen) instead of only
+    // offering a download. Anything else keeps the attachment behaviour.
+    const imageMime = IMAGE_MIME[path.extname(abs).toLowerCase()];
+    if (imageMime && req.query.download !== '1') {
+      res.setHeader('Content-Type', imageMime);
+      res.setHeader('Content-Length', String(st.size));
+      res.setHeader('Cache-Control', 'private, max-age=60');
+      res.setHeader(
+        'Content-Disposition',
+        `inline; filename*=UTF-8''${encodeURIComponent(name)}`
+      );
+      await fsp.readFile(abs).then((buf) => res.end(buf));
+      return undefined;
+    }
+    res.setHeader('Content-Type', imageMime || 'application/octet-stream');
     res.setHeader('Content-Length', String(st.size));
     res.setHeader(
       'Content-Disposition',
@@ -282,6 +312,88 @@ conversationFsRouter.post('/delete', async (req, res) => {
     if (st.isDirectory()) await fsp.rm(abs, { recursive: true, force: true });
     else await fsp.unlink(abs);
     res.json({ deleted: abs });
+  } catch (e) {
+    sendError(res, e);
+  }
+});
+
+/* ------------------------------------------------------------------ *
+ * Per-message file changes: list, diff and revert.
+ * ------------------------------------------------------------------ */
+
+/** Lightweight list for the transcript: one row per changed text file. */
+conversationFsRouter.get('/changes', (req, res) => {
+  const conv = conversation(req, res);
+  if (!conv) return undefined;
+  try {
+    const rows = db
+      .prepare('SELECT * FROM file_changes WHERE conversation_id = ? ORDER BY id')
+      .all(conv.id);
+    const changes = [];
+    for (const row of rows) {
+      // A tool may touch a file without changing a byte (or the change may have
+      // been reverted); those rows are noise in the transcript.
+      if (isNoopChange(row)) continue;
+      const { added, removed } = changeStats(row.before_text, row.after_text);
+      changes.push({
+        id: row.id,
+        message_id: row.message_id,
+        path: row.path,
+        rel_path: row.rel_path || row.path,
+        before_exists: row.before_exists,
+        after_exists: row.after_exists,
+        added,
+        removed,
+        reverted_at: row.reverted_at
+      });
+    }
+    res.json({ changes });
+  } catch (e) {
+    sendError(res, e);
+  }
+});
+
+/** Full before/after text plus a line diff for the comparison dialog. */
+conversationFsRouter.get('/changes/:changeId', (req, res) => {
+  const conv = conversation(req, res);
+  if (!conv) return undefined;
+  try {
+    const row = db
+      .prepare('SELECT * FROM file_changes WHERE id = ? AND conversation_id = ?')
+      .get(Number(req.params.changeId), conv.id);
+    if (!row) return res.status(404).json({ error: 'change not found' });
+    res.json({
+      id: row.id,
+      message_id: row.message_id,
+      path: row.path,
+      rel_path: row.rel_path || row.path,
+      before_exists: row.before_exists,
+      after_exists: row.after_exists,
+      before_text: row.before_text,
+      after_text: row.after_text,
+      reverted_at: row.reverted_at,
+      diff: diffLines(row.before_text, row.after_text)
+    });
+  } catch (e) {
+    sendError(res, e);
+  }
+});
+
+/** Put one file back the way it was before this turn. */
+conversationFsRouter.post('/changes/:changeId/revert', async (req, res) => {
+  const conv = conversation(req, res);
+  if (!conv) return undefined;
+  try {
+    const row = db
+      .prepare('SELECT * FROM file_changes WHERE id = ? AND conversation_id = ?')
+      .get(Number(req.params.changeId), conv.id);
+    if (!row) return res.status(404).json({ error: 'change not found' });
+    // The stored path is absolute; validate it against the chat's *current*
+    // policy so a revert can never write outside the allowed folder.
+    const abs = runWithPolicy(conv, () => resolvePath(row.path));
+    const message = await revertChange(abs, row);
+    db.prepare("UPDATE file_changes SET reverted_at = datetime('now') WHERE id = ?").run(row.id);
+    res.json({ ok: true, message, path: abs });
   } catch (e) {
     sendError(res, e);
   }

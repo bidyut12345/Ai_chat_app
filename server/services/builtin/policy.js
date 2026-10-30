@@ -1,4 +1,4 @@
-﻿/**
+/**
  * Access policy for the built-in `files` and `shell` MCP servers.
  *
  * The policy is **per conversation**: every chat carries its own working folder
@@ -35,16 +35,28 @@ const BASE_POLICY = {
   shellAccess: 'restricted',
   workdir: DEFAULT_ROOT,
   filesEnabled: true,
-  shellEnabled: true
+  shellEnabled: true,
+  disabledServers: new Set()
 };
 
 const store = new AsyncLocalStorage();
 
 const bool = (v) => (v === undefined || v === null ? true : Number(v) !== 0);
 
+/** Parse the per-chat JSON list of switched-off MCP server names. */
+function disabledServers(raw) {
+  if (!raw) return new Set();
+  try {
+    const v = typeof raw === 'string' ? JSON.parse(raw) : raw;
+    return new Set(Array.isArray(v) ? v.map((n) => String(n)).filter(Boolean) : []);
+  } catch {
+    return new Set();
+  }
+}
+
 /** Turn a conversation row (or partial override) into a normalised policy. */
 export function normalizePolicy(row) {
-  if (!row) return { ...BASE_POLICY };
+  if (!row) return { ...BASE_POLICY, disabledServers: new Set() };
   const workdir = String(row.workdir || '').trim();
   return {
     approval: row.approval_mode === 'auto' ? 'auto' : 'ask',
@@ -52,7 +64,8 @@ export function normalizePolicy(row) {
     shellAccess: row.shell_access === 'full' ? 'full' : 'restricted',
     workdir: path.resolve(workdir || DEFAULT_ROOT),
     filesEnabled: bool(row.files_enabled),
-    shellEnabled: bool(row.shell_enabled)
+    shellEnabled: bool(row.shell_enabled),
+    disabledServers: disabledServers(row.mcp_disabled)
   };
 }
 
@@ -88,6 +101,11 @@ export function filesEnabled() {
 
 export function shellEnabled() {
   return ctx().shellEnabled;
+}
+
+/** Whether the active chat has this MCP server switched on. */
+export function serverEnabled(name) {
+  return !ctx().disabledServers.has(String(name));
 }
 
 /** The chat's working folder: file root and default shell directory. */
@@ -214,6 +232,7 @@ export function toolNeedsApproval(tool) {
 export function describeCall(qualifiedName, args) {
   const a = args || {};
   const str = (v) => (typeof v === 'string' ? v : v == null ? '' : JSON.stringify(v));
+  const windowRef = str(a.title) || (a.handle ? `handle ${a.handle}` : 'the focused window');
   switch (qualifiedName) {
     case 'shell__run_command':
       return { kind: 'command', title: 'Run a shell command', detail: str(a.command), extra: a.cwd ? 'in ' + a.cwd : '' };
@@ -236,6 +255,52 @@ export function describeCall(qualifiedName, args) {
       return { kind: 'file', title: 'Copy', detail: `${str(a.from)}  ->  ${str(a.to)}` };
     case 'files__create_directory':
       return { kind: 'file', title: 'Create a folder', detail: str(a.path) };
+    case 'files__zip':
+      return {
+        kind: 'file',
+        title: 'Create a zip archive',
+        detail: str(a.path),
+        extra: Array.isArray(a.sources) ? a.sources.join(', ') : str(a.sources)
+      };
+    case 'files__unzip':
+      return { kind: 'file', title: 'Extract a zip archive', detail: str(a.path), extra: a.to ? `to ${a.to}` : '' };
+    case 'files__share_workspace':
+      return { kind: 'file', title: 'Share the workspace as a zip', detail: str(a.path) || 'workspace.zip' };
+    case 'windows__launch_app':
+      return { kind: 'app', title: 'Launch an app', detail: str(a.target), extra: str(a.arguments) };
+    case 'windows__focus_window':
+      return { kind: 'app', title: 'Bring a window to the front', detail: windowRef };
+    case 'windows__window_action':
+      return { kind: 'app', title: `${str(a.action) || 'Change'} a window`, detail: windowRef };
+    case 'windows__send_keys':
+      return { kind: 'input', title: 'Send keystrokes', detail: str(a.keys).slice(0, 200), extra: windowRef };
+    case 'windows__type_text':
+      return { kind: 'input', title: 'Type into a window', detail: str(a.text).slice(0, 400), extra: windowRef };
+    case 'windows__mouse_click':
+      return { kind: 'input', title: 'Click the mouse', detail: `${str(a.button) || 'left'} click at ${str(a.x)},${str(a.y)}` };
+    case 'windows__clipboard_set':
+      return { kind: 'input', title: 'Replace the clipboard', detail: str(a.text).slice(0, 400) };
+    case 'chrome__open':
+    case 'edge__open':
+      return { kind: 'browser', title: 'Start the browser', detail: str(a.url) || '(no page)' };
+    case 'chrome__navigate':
+    case 'edge__navigate':
+      return { kind: 'browser', title: 'Open a page', detail: str(a.url) };
+    case 'chrome__click':
+    case 'edge__click':
+      return { kind: 'browser', title: 'Click on the page', detail: str(a.selector) || str(a.text) };
+    case 'chrome__fill':
+    case 'edge__fill':
+      return { kind: 'browser', title: 'Fill a form field', detail: str(a.selector), body: str(a.text).slice(0, 2000) };
+    case 'chrome__evaluate_js':
+    case 'edge__evaluate_js':
+      return { kind: 'browser', title: 'Run JavaScript in the page', detail: str(a.expression).slice(0, 2000) };
+    case 'chrome__press_key':
+    case 'edge__press_key':
+      return { kind: 'browser', title: 'Press a key in the page', detail: str(a.key) };
+    case 'chrome__close_page':
+    case 'edge__close_page':
+      return { kind: 'browser', title: 'Close a tab', detail: str(a.page_id) || '(current tab)' };
     default:
       return { kind: 'tool', title: `Run ${qualifiedName}`, detail: JSON.stringify(a, null, 2).slice(0, 2000) };
   }

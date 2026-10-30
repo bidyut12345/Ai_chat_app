@@ -5,6 +5,20 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
   <meta name="theme-color" content="#212121" />
   <title>RiSriGPT</title>
+  <!-- Resolve the saved theme before the stylesheet paints to avoid a flash. -->
+  <script>
+    (function () {
+      try {
+        var saved = localStorage.getItem('theme');
+        var mode = saved === 'light' || saved === 'dark'
+          ? saved
+          : (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
+        document.documentElement.dataset.theme = mode;
+        var meta = document.querySelector('meta[name="theme-color"]');
+        if (meta) meta.setAttribute('content', mode === 'light' ? '#ffffff' : '#212121');
+      } catch (e) { /* private mode / storage disabled */ }
+    })();
+  </script>
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>💬</text></svg>" />
   <link rel="stylesheet" href="styles.css" />
 </head>
@@ -25,6 +39,7 @@
           </button>
           <div id="user-menu" class="user-menu hidden">
             <div class="user-menu-head"><span id="user-menu-name"></span><span id="user-menu-role" class="user-role"></span></div>
+            <button id="btn-theme" class="user-menu-item" title="Switch between dark, light and system theme">🌗 Theme: dark</button>
             <button id="btn-change-password" class="user-menu-item">🔑 Change password</button>
             <button id="btn-manage-users" class="user-menu-item hidden">👥 Manage users</button>
             <button id="btn-logout" class="user-menu-item">⎋ Sign out</button>
@@ -59,23 +74,27 @@
         <div class="chat-title-wrap">
           <div class="chat-title-row">
             <input id="chat-title" class="chat-title" value="New chat" spellcheck="false" />
-            <button type="button" id="btn-ai-title" class="ai-title-btn" title="Generate a title with AI">✨ AI</button>
           </div>
           <div id="chat-sub" class="chat-sub"></div>
         </div>
+        <button type="button" id="btn-ai-title" class="ai-title-btn" title="Generate a title with AI"><span class="hb-ico">✨</span><span class="hb-label">AI</span></button>
+        <button type="button" id="btn-export-chat" class="header-btn" title="Download this chat as Markdown"><span class="hb-ico">⤓</span><span class="hb-label">Export</span></button>
         <select id="sel-model" class="model-select" title="Model for this conversation"></select>
       </header>
 
-      <div id="messages" class="messages">
-        <div id="empty-state" class="empty-state">
-          <div class="empty-emoji">💬</div>
-          <h2>RiSriGPT</h2>
-          <p>Chats are stored in a local SQLite database.<br />Works with any OpenAI-compatible server.</p>
-          <div class="empty-actions">
-            <button class="btn btn-primary" id="empty-new">Start a chat</button>
-            <button class="btn" id="empty-settings">Set server URL</button>
+      <div class="messages-wrap">
+        <div id="messages" class="messages">
+          <div id="empty-state" class="empty-state">
+            <div class="empty-emoji">🤖</div>
+            <h2>RiSriGPT</h2>
+            <p>Your conversations are stored in a local SQLite database.<br>Point Settings at any OpenAI-compatible server (LM Studio, Ollama, llama.cpp, vLLM, OpenAI…).</p>
+            <div class="empty-actions">
+              <button class="btn btn-primary" id="empty-new">Start a chat</button>
+              <button class="btn" id="empty-settings">Configure server URL</button>
+            </div>
           </div>
         </div>
+        <div id="pill-rail" class="pill-rail hidden" aria-hidden="true"></div>
       </div>
 
       <div id="approvals" class="approvals"></div>
@@ -88,7 +107,7 @@
 
         <!-- Everything that used to sit above the message box lives in this menu -->
         <div id="plus-menu" class="plus-menu hidden">
-          <div class="pm-section">
+          <div id="pm-mcp-tools" class="pm-section">
             <div class="pm-row" title="Let the model call MCP tools">
               <span class="pm-ico">🔌</span><label class="pm-label" for="chk-tools">MCP tools</label>
               <input type="checkbox" id="chk-tools" class="switch" title="MCP tools on/off" checked />
@@ -107,7 +126,7 @@
             <div id="pm-mcp-custom-list" class="pm-mcp-list"></div>
           </div>
 
-          <div class="pm-section">
+          <div id="pm-attach" class="pm-section">
             <button type="button" class="pm-item" id="btn-attach">
               <span class="pm-ico">📎</span><span>Add photos &amp; files</span>
             </button>
@@ -185,6 +204,7 @@
           <button type="submit" id="btn-send" class="send-btn" title="Send">↑</button>
           <button type="button" id="btn-stop" class="send-btn stop hidden" title="Stop generating">■</button>
         </form>
+        <div id="composer-folder" class="composer-folder hidden" title=""></div>
         <div class="composer-hint">
           <span id="hint-tools"></span>
           <span class="ctx-compact-group" title="Compact older context into a summary now. Choose how much recent context to keep.">
@@ -210,6 +230,9 @@
         <button type="button" class="btn btn-ghost icon-btn" data-close value="close">✕</button>
       </header>
       <div class="modal-body">
+        <p id="settings-admin-hint" class="admin-hint hidden">
+          🔒 These settings are managed by an administrator. You can still use the chat and its tools.
+        </p>
         <section>
           <h3>AI server (OpenAI compatible)</h3>
           <label class="field">
@@ -286,11 +309,15 @@
         <section>
           <h3>Built-in tools</h3>
           <p class="muted">
-            The app ships two MCP servers of its own: <code>files</code> and <code>shell</code>.
-            Every chat has its own <strong>working folder</strong>, <strong>approval mode</strong> and
-            <strong>file / shell access</strong> — open the <strong>+</strong> menu next to the message box.
+            The app ships five MCP servers of its own: <code>files</code>, <code>shell</code>,
+            <code>windows</code>, <code>chrome</code> and <code>edge</code>.
+            <code>windows</code> drives the desktop (windows, typing, clicking, screenshots);
+            <code>chrome</code> / <code>edge</code> drive a browser in its own profile, so your normal
+            browsing profile is never touched. Every chat has its own <strong>working folder</strong>,
+            <strong>approval mode</strong> and <strong>file / shell access</strong> — open the
+            <strong>+</strong> menu next to the message box to switch each server on or off for that chat.
             A new chat starts in your home folder with <em>Ask me first</em>, access restricted to that
-            folder, and both tool sets on. Switch a server off for <em>all</em> chats in
+            folder, and all tool sets on. Switch a server off for <em>all</em> chats in
             <em>MCP servers</em> below.
           </p>
           <label class="field">
@@ -310,6 +337,18 @@
             <button type="button" class="btn" id="btn-clear-grants">Forget remembered approvals</button>
           </div>
           <pre id="policy-result" class="test-result hidden"></pre>
+        </section>
+
+        <section id="accounts-section">
+          <h3>Accounts</h3>
+          <label class="field checkbox-field">
+            <input id="set-allow_registration" type="checkbox" />
+            <span>Allow new sign-ups</span>
+          </label>
+          <small class="muted">
+            When off, only an administrator can create accounts (user menu → Manage users).
+            The first account is always allowed.
+          </small>
         </section>
 
         <section id="mcp-section">
@@ -445,6 +484,24 @@
     </form>
   </dialog>
 
+  <!-- ───────── File change comparison for a user message ───────── -->
+  <dialog id="dlg-diff" class="modal">
+    <form method="dialog">
+      <header class="modal-head">
+        <h2 id="diff-title">File comparison</h2>
+        <button type="button" class="btn btn-ghost icon-btn" data-close value="close">✕</button>
+      </header>
+      <div class="modal-body">
+        <div class="row diff-meta">
+          <span id="diff-stats" class="muted"></span>
+          <span class="grow"></span>
+          <button type="button" class="btn btn-danger sm" id="btn-diff-revert">Revert this file</button>
+        </div>
+        <div id="diff-body" class="diff-body"></div>
+      </div>
+    </form>
+  </dialog>
+
   <!-- ───────── Login / setup overlay ───────── -->
   <div id="login-overlay" class="login-overlay hidden">
     <div class="login-card">
@@ -486,6 +543,22 @@
         </div>
       </div>
     </form>
+  </dialog>
+
+  <!-- ───────── Image lightbox ───────── -->
+  <dialog id="dlg-lightbox" class="lightbox">
+    <button type="button" class="icon-btn plain lightbox-close" data-close title="Close (Esc)">✕</button>
+    <img id="lightbox-img" alt="image" />
+  </dialog>
+
+  <!-- ───────── Command palette (Ctrl/Cmd+K) ───────── -->
+  <dialog id="dlg-palette" class="palette" aria-label="Command palette">
+    <div class="palette-box">
+      <input id="palette-input" type="text" autocomplete="off" spellcheck="false"
+             placeholder="Search chats or run a command…" aria-label="Search chats or commands" />
+      <div id="palette-list" class="palette-list" role="listbox"></div>
+      <div class="palette-foot"><span><kbd>↑</kbd><kbd>↓</kbd> navigate</span><span><kbd>↵</kbd> run</span><span><kbd>esc</kbd> close</span></div>
+    </div>
   </dialog>
 
   <div id="toast" class="toast hidden"></div>

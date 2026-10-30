@@ -1,21 +1,142 @@
 /* RiSriGPT — ChatGPT-style UI */
 
+/* Dark is the default. `html[data-theme="light"]` below redefines the same
+   variables, so every component follows the theme without extra selectors.
+   The inline script in index.html sets data-theme before the first paint. */
 :root {
   color-scheme: dark;
   --bg: #212121;
   --bg-side: #171717;
   --bg-input: #303030;
   --bg-raised: #2f2f2f;
+  --bg-elev: #2a2a2a;
+  --bg-sunken: #1b1b1b;
+  --bg-code: #0d0d0d;
+  --bg-field: #212121;
+  --bg-menu: #2f2f2f;
+  --bg-track: #3a3a3a;
+  --bg-seg-on: #4d4d4d;
+  --bg-switch-off: #5a5a5a;
+  --bg-hover: #262626;
+  --surface-2: #2a2a2a;
   --border: #383838;
+  --border-soft: #3d3d3d;
+  --border-faint: #2c2c2c;
+  --border-strong: #565656;
+  --border-stronger: #6b6b6b;
   --text: #ececec;
-  --dim: #a8a8a8;
-  --dimmer: #7f7f7f;
+  --text-strong: #ffffff;
+  --dim: #b0b0b0;
+  --dimmer: #8c8c8c;
   --accent: #ffffff;
   --accent-fg: #0d0d0d;
   --danger: #ff6b6b;
+  --danger-fg: #ffc9c9;
+  --danger-border: rgba(255, 107, 107, .35);
+  --danger-border-strong: #b05656;
+  --danger-bg: rgba(255, 107, 107, .12);
+  --danger-bg-strong: rgba(255, 107, 107, .26);
   --ok: #4ade80;
+  --diff-add-bg: rgba(74, 222, 128, .12);
+  --diff-add-fg: #b9f6ca;
+  --diff-del-bg: rgba(255, 107, 107, .12);
+  --diff-del-fg: #ffc9c9;
+  --link: #9fb8ff;
+  --link-strong: #6ea8ff;
+  --info: #4aa3ff;
+  --warn: #fbbf24;
+  --tag-bg: #2b3a55;
+  --tag-fg: #9dc2ff;
+  --dot: #6b6b6b;
+  --hover: rgba(255, 255, 255, .08);
+  --hover-strong: rgba(255, 255, 255, .1);
+  --tint: rgba(255, 255, 255, .04);
+  --focus-ring: rgba(255, 255, 255, .35);
+  --btn-bg: #2f2f2f;
+  --btn-hover: #3d3d3d;
+  --btn-strong: #d9d9d9;
+  --toast-bg: #f9f9f9;
+  --toast-fg: #111111;
+  --backdrop: rgba(0, 0, 0, .55);
+  --backdrop-strong: rgba(0, 0, 0, .65);
+  --sidebar-shadow: 0 0 40px rgba(0, 0, 0, .6);
+  --shadow-1: 0 1px 2px rgba(0, 0, 0, .35);
+  --shadow-2: 0 8px 24px rgba(0, 0, 0, .45);
+  --shadow-3: 0 20px 60px rgba(0, 0, 0, .55);
+  --scroll-thumb: #4d4d4d;
+  --scroll-thumb-hover: #6a6a6a;
+  --scroll-thumb-active: #7d7d7d;
+  --scroll-code: #555;
+  --scroll-code-hover: #777;
   --col: 760px;
   --safe-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+html[data-theme="light"] {
+  color-scheme: light;
+  --bg: #ffffff;
+  --bg-side: #f7f7f8;
+  --bg-input: #ececef;
+  --bg-raised: #ffffff;
+  --bg-elev: #ffffff;
+  --bg-sunken: #f4f4f6;
+  --bg-code: #f6f7f9;
+  --bg-field: #f4f4f6;
+  --bg-menu: #ffffff;
+  --bg-track: #e4e4e8;
+  --bg-seg-on: #ffffff;
+  --bg-switch-off: #c9c9d1;
+  --bg-hover: #ececef;
+  --surface-2: #f4f4f6;
+  --border: #e2e2e6;
+  --border-soft: #e6e6ea;
+  --border-faint: #ececef;
+  --border-strong: #c8c8d0;
+  --border-stronger: #b4b4bd;
+  --text: #16161a;
+  --text-strong: #000000;
+  --dim: #5b5b66;
+  --dimmer: #6f6f7a;
+  --accent: #16161a;
+  --accent-fg: #ffffff;
+  --danger: #d92d20;
+  --danger-fg: #a4150b;
+  --danger-border: rgba(217, 45, 32, .28);
+  --danger-border-strong: #c24141;
+  --danger-bg: rgba(217, 45, 32, .08);
+  --danger-bg-strong: rgba(217, 45, 32, .16);
+  --ok: #128a4b;
+  --diff-add-bg: rgba(18, 138, 75, .09);
+  --diff-add-fg: #0f6b3a;
+  --diff-del-bg: rgba(217, 45, 32, .07);
+  --diff-del-fg: #a4150b;
+  --link: #1d4ed8;
+  --link-strong: #2563eb;
+  --info: #1d6fd8;
+  --warn: #b45309;
+  --tag-bg: #e6eefc;
+  --tag-fg: #1d4ed8;
+  --dot: #9a9aa4;
+  --hover: rgba(0, 0, 0, .06);
+  --hover-strong: rgba(0, 0, 0, .1);
+  --tint: rgba(0, 0, 0, .03);
+  --focus-ring: rgba(0, 0, 0, .35);
+  --btn-bg: #f0f0f3;
+  --btn-hover: #e6e6ea;
+  --btn-strong: #333338;
+  --toast-bg: #1f1f24;
+  --toast-fg: #ffffff;
+  --backdrop: rgba(0, 0, 0, .35);
+  --backdrop-strong: rgba(0, 0, 0, .45);
+  --sidebar-shadow: 0 0 30px rgba(0, 0, 0, .12);
+  --shadow-1: 0 1px 2px rgba(16, 24, 40, .07);
+  --shadow-2: 0 8px 24px rgba(16, 24, 40, .12);
+  --shadow-3: 0 20px 60px rgba(16, 24, 40, .18);
+  --scroll-thumb: #c2c2c8;
+  --scroll-thumb-hover: #a8a8b2;
+  --scroll-thumb-active: #8e8e99;
+  --scroll-code: #b8b8c2;
+  --scroll-code-hover: #9a9aa5;
 }
 
 * {
@@ -25,7 +146,7 @@
 /* ───────────── Scrollbars (thin, dark, theme-aware) ───────────── */
 * {
   scrollbar-width: thin;
-  scrollbar-color: #4d4d4d transparent;
+  scrollbar-color: var(--scroll-thumb) transparent;
 }
 
 ::-webkit-scrollbar {
@@ -38,7 +159,7 @@
 }
 
 ::-webkit-scrollbar-thumb {
-  background: #4d4d4d;
+  background: var(--scroll-thumb);
   border-radius: 8px;
   border: 3px solid transparent;
   background-clip: content-box;
@@ -47,12 +168,12 @@
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: #6a6a6a;
+  background: var(--scroll-thumb-hover);
   background-clip: content-box;
 }
 
 ::-webkit-scrollbar-thumb:active {
-  background: #7d7d7d;
+  background: var(--scroll-thumb-active);
   background-clip: content-box;
 }
 
@@ -63,13 +184,13 @@
 /* Horizontal bars in code/pre blocks sit on a near-black surface. */
 pre::-webkit-scrollbar-thumb,
 code::-webkit-scrollbar-thumb {
-  background: #555;
+  background: var(--scroll-code);
   background-clip: content-box;
 }
 
 pre::-webkit-scrollbar-thumb:hover,
 code::-webkit-scrollbar-thumb:hover {
-  background: #777;
+  background: var(--scroll-code-hover);
   background-clip: content-box;
 }
 
@@ -95,7 +216,21 @@ textarea {
 }
 
 a {
-  color: #9fb8ff;
+  color: var(--link);
+}
+
+::selection {
+  background: var(--accent);
+  color: var(--accent-fg);
+}
+
+/* Keyboard users get a visible ring; mouse clicks stay clean. */
+button:focus-visible,
+a:focus-visible,
+select:focus-visible,
+[tabindex]:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
 }
 
 .hidden {
@@ -118,12 +253,14 @@ a {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 10px;
+  align-items: start;
 }
 
 .row-3 {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
   gap: 10px;
+  align-items: start;
 }
 
 .grow {
@@ -142,6 +279,7 @@ a {
   width: 262px;
   flex: 0 0 262px;
   background: var(--bg-side);
+  border-right: 1px solid var(--border-faint);
   display: flex;
   flex-direction: column;
   min-height: 0;
@@ -164,7 +302,7 @@ a {
 .backdrop {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, .55);
+  background: var(--backdrop);
   z-index: 40;
   border: 0;
   padding: 0;
@@ -180,10 +318,10 @@ a {
   display: flex;
   align-items: center;
   gap: 9px;
-  padding: 14px 14px 6px;
+  padding: 16px 14px 10px;
   font-size: 15px;
-  font-weight: 600;
-  letter-spacing: .2px;
+  font-weight: 650;
+  letter-spacing: -.1px;
 }
 
 .brand-spacer {
@@ -209,7 +347,7 @@ a {
 }
 
 .user-menu-btn:hover {
-  background: #212121;
+  background: var(--bg-hover);
 }
 
 .user-avatar {
@@ -242,7 +380,7 @@ a {
   background: var(--bg-raised);
   border: 1px solid var(--border);
   border-radius: 10px;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, .4);
+  box-shadow: var(--shadow-2);
   padding: 6px;
 }
 
@@ -281,13 +419,13 @@ a {
 }
 
 .user-menu-item:hover {
-  background: #383838;
+  background: var(--bg-hover);
 }
 
 .link-btn {
   background: none;
   border: none;
-  color: #6ea8ff;
+  color: var(--link-strong);
   cursor: pointer;
   font-size: 12.5px;
   padding: 2px 6px;
@@ -308,8 +446,8 @@ a {
   border-radius: 999px;
   padding: 1px 6px;
   margin-left: 6px;
-  background: #2b3a55;
-  color: #9dc2ff;
+  background: var(--tag-bg);
+  color: var(--tag-fg);
 }
 
 .users-list {
@@ -393,7 +531,7 @@ a {
   border: 1px solid var(--border);
   border-radius: 16px;
   padding: 28px 26px;
-  box-shadow: 0 12px 40px rgba(0, 0, 0, .5);
+  box-shadow: var(--shadow-3);
 }
 
 .login-brand {
@@ -422,7 +560,7 @@ a {
 }
 
 .login-error {
-  background: rgba(255, 107, 107, .12);
+  background: var(--danger-bg);
   border: 1px solid var(--danger);
   color: var(--danger);
   border-radius: 8px;
@@ -454,7 +592,8 @@ a {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .app-spinner {
+  .app-spinner,
+  .conv-spinner {
     animation-duration: 1.6s;
   }
 }
@@ -465,16 +604,19 @@ a {
   gap: 10px;
   width: 100%;
   background: transparent;
-  border: 1px solid var(--border);
+  border: 1px solid var(--border-soft);
   border-radius: 10px;
-  padding: 9px 12px;
+  padding: 8px 11px;
   cursor: pointer;
-  font-size: 14px;
+  font-size: 13.5px;
   font-weight: 500;
+  color: var(--text);
+  transition: background .12s ease, border-color .12s ease;
 }
 
 .new-chat-btn:hover {
-  background: #212121;
+  background: var(--bg-hover);
+  border-color: var(--border);
 }
 
 .nc-icon {
@@ -490,51 +632,83 @@ a {
 }
 
 .sidebar-search {
-  padding: 6px 12px 8px;
+  padding: 4px 12px 10px;
 }
 
 .sidebar-search input {
   width: 100%;
-  background: transparent;
-  border: 1px solid var(--border);
+  background: var(--tint);
+  border: 1px solid transparent;
   border-radius: 10px;
   padding: 8px 12px;
   font-size: 13.5px;
+  color: var(--text);
   outline: none;
+  transition: border-color .12s ease, background .12s ease;
+}
+
+.sidebar-search input:hover {
+  border-color: var(--border-soft);
 }
 
 .sidebar-search input:focus {
-  border-color: #565656;
+  background: transparent;
+  border-color: var(--border-strong);
 }
 
 .conv-list {
   flex: 1;
   overflow-y: auto;
-  padding: 4px 8px;
+  padding: 2px 8px 8px;
   min-height: 0;
 }
 
 .conv-item {
   position: relative;
-  padding: 9px 32px 9px 11px;
+  padding: 8px 30px 8px 10px;
   border-radius: 10px;
   cursor: pointer;
-  margin-bottom: 1px;
+  margin-bottom: 2px;
+  transition: background .12s ease;
 }
 
 .conv-item:hover {
-  background: #212121;
+  background: var(--bg-hover);
 }
 
 .conv-item.active {
-  background: #2f2f2f;
+  background: var(--bg-raised);
+  box-shadow: inset 0 0 0 1px var(--border-faint);
 }
 
+/* Title row: the spinner is a fixed square, the text truncates around it. */
 .conv-title {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
   font-size: 13.5px;
-  white-space: nowrap;
+  font-weight: 500;
+  color: var(--text);
+}
+
+.conv-title-text {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* A chat that is generating gets a spinner next to its title, so the list
+   shows activity even while you are looking at another conversation. */
+.conv-spinner {
+  flex: 0 0 auto;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  border: 2px solid var(--border-strong);
+  border-top-color: var(--ok);
+  animation: app-spin .8s linear infinite;
 }
 
 .conv-meta {
@@ -543,7 +717,18 @@ a {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  margin-top: 1px;
+  margin-top: 2px;
+}
+
+.conv-path {
+  font-size: 11px;
+  color: var(--dimmer);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  line-height: 1.4;
+  margin-top: 3px;
+  opacity: .85;
 }
 
 .conv-del {
@@ -567,12 +752,12 @@ a {
 
 .conv-del:hover {
   color: var(--danger);
-  background: rgba(255, 255, 255, .06);
+  background: var(--hover);
 }
 
 .sidebar-foot {
   padding: 10px 12px calc(12px + var(--safe-bottom));
-  border-top: 1px solid #2a2a2a;
+  border-top: 1px solid var(--border-faint);
 }
 
 .status-pill {
@@ -581,7 +766,7 @@ a {
   gap: 7px;
   font-size: 12px;
   color: var(--dim);
-  padding: 4px 2px 8px;
+  padding: 2px 8px 10px;
 }
 
 .dot {
@@ -600,7 +785,7 @@ a {
 }
 
 .dot-grey {
-  background: #6b6b6b;
+  background: var(--dot);
 }
 
 .foot-buttons {
@@ -618,10 +803,11 @@ a {
   padding: 7px 8px;
   border-radius: 8px;
   font-size: 13px;
+  transition: background .12s ease, color .12s ease;
 }
 
 .side-link:hover {
-  background: #212121;
+  background: var(--bg-hover);
   color: var(--text);
 }
 
@@ -630,7 +816,7 @@ a {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 8px 16px;
+  padding: 10px 16px 8px;
   flex: 0 0 auto;
   width: 100%;
   max-width: calc(var(--col) + 32px);
@@ -645,35 +831,12 @@ a {
 .chat-title-row {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 6px;
 }
 
 .chat-title-row .chat-title {
   flex: 1;
   min-width: 0;
-}
-
-.ai-title-btn {
-  flex: none;
-  border: 1px solid var(--border);
-  background: transparent;
-  color: var(--dim);
-  border-radius: 999px;
-  padding: 2px 8px;
-  font-size: 11px;
-  line-height: 1.4;
-  cursor: pointer;
-  white-space: nowrap;
-}
-
-.ai-title-btn:hover:not(:disabled) {
-  border-color: var(--accent);
-  color: var(--text);
-}
-
-.ai-title-btn:disabled {
-  opacity: 0.5;
-  cursor: default;
 }
 
 .chat-title {
@@ -683,39 +846,95 @@ a {
   outline: none;
   font-size: 15px;
   font-weight: 600;
-  padding: 2px 4px;
-  border-radius: 6px;
+  letter-spacing: -.1px;
+  padding: 3px 6px;
+  margin-left: -6px;
+  border-radius: 7px;
   text-overflow: ellipsis;
+  transition: background .12s ease;
 }
 
 .chat-title:hover,
 .chat-title:focus {
-  background: #2a2a2a;
+  background: var(--hover);
 }
 
 .chat-sub {
-  font-size: 11.5px;
-  color: var(--dimmer);
-  padding-left: 4px;
+  font-size: 12px;
+  color: var(--dim);
+  padding-left: 0;
+  margin-top: 1px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
+/* The AI-title, export and model controls share one look, one height and one
+   baseline: all three are direct children of the header, so `align-items:
+   center` puts their text on the same line. */
+.ai-title-btn,
+.header-btn,
 .model-select {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 30px;
   background: transparent;
-  border: 0;
+  border: 1px solid var(--border-soft);
   border-radius: 8px;
-  padding: 6px 8px;
-  font-size: 13.5px;
-  font-weight: 600;
+  color: var(--dim);
+  font-size: 12.5px;
+  line-height: 1;
+  white-space: nowrap;
   cursor: pointer;
-  max-width: 210px;
-  text-overflow: ellipsis;
+  transition: background .12s ease, border-color .12s ease, color .12s ease;
 }
 
+/* Emoji/glyph icons get a fixed square box, otherwise their font metrics push
+   them below the label they sit next to. */
+.hb-ico {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 15px;
+  height: 15px;
+  font-size: 12.5px;
+  line-height: 1;
+}
+
+.hb-label {
+  display: inline-block;
+  line-height: 1;
+}
+
+.ai-title-btn {
+  padding: 0 10px;
+  /* Keeps the row from twitching while the label is swapped for "…". */
+  min-width: 54px;
+}
+
+.ai-title-btn:hover:not(:disabled),
+.header-btn:hover:not(:disabled),
 .model-select:hover {
-  background: #2a2a2a;
+  background: var(--hover);
+  border-color: var(--border);
+  color: var(--text);
+}
+
+.ai-title-btn:disabled {
+  opacity: .45;
+  cursor: default;
+}
+
+.model-select {
+  max-width: 190px;
+  padding: 0 6px 0 10px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
 }
 
 .model-select option {
@@ -724,10 +943,60 @@ a {
 }
 
 /* ───────────── Messages ───────────── */
+.messages-wrap {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+  position: relative;
+}
+
 .messages {
   flex: 1;
   overflow-y: auto;
-  padding: 8px 16px 14px;
+  padding: 14px 16px 22px;
+}
+
+/* ─────────── Pill scroll rail (message minimap) ─────────── */
+.pill-rail {
+  width: 18px;
+  flex: 0 0 18px;
+  position: relative;
+  margin: 8px 4px 14px 0;
+  overflow: hidden;
+}
+
+.pill-rail.hidden {
+  display: none;
+}
+
+.pill {
+  position: absolute;
+  left: 4px;
+  width: 10px;
+  height: 5px;
+  border-radius: 3px;
+  background: var(--dim, #888);
+  opacity: .45;
+  cursor: pointer;
+  transition: opacity .12s ease, width .12s ease, background .12s ease;
+}
+
+.pill:hover {
+  opacity: 1;
+}
+
+.pill.user {
+  background: var(--info);
+}
+
+.pill.assistant {
+  background: var(--ok);
+}
+
+.pill.active {
+  width: 14px;
+  left: 2px;
+  opacity: 1;
 }
 
 .messages>* {
@@ -748,32 +1017,305 @@ a {
 
 .empty-state {
   text-align: center;
-  padding: 13vh 20px 20px;
+  padding: 16vh 20px 24px;
   color: var(--dim);
 }
 
 .empty-emoji {
-  font-size: 40px;
+  font-size: 44px;
+  line-height: 1;
 }
 
 .empty-state h2 {
   color: var(--text);
-  margin: 12px 0 6px;
+  margin: 16px 0 8px;
   font-size: 22px;
+  letter-spacing: -.2px;
+}
+
+.empty-state p {
+  margin: 0 auto;
+  max-width: 460px;
+  font-size: 13.5px;
+  line-height: 1.6;
 }
 
 .empty-actions {
   display: flex;
   gap: 10px;
   justify-content: center;
-  margin-top: 18px;
+  margin-top: 22px;
   flex-wrap: wrap;
+}
+
+/* Inside a chat that has no messages yet: same welcome, less vertical drift. */
+.empty-state.in-chat {
+  padding-top: 11vh;
+}
+
+.empty-state.in-chat .empty-emoji {
+  font-size: 34px;
+}
+
+.empty-state.in-chat h2 {
+  font-size: 20px;
+  margin-top: 12px;
+}
+
+/* Blank-chat setup: the whole "+" menu, laid out inline so every chat option
+   is visible before the first message — no tabs, no dropdowns, one click. */
+.empty-state.in-chat.has-setup {
+  padding-top: 3vh;
+}
+
+.empty-state.in-chat.has-setup p {
+  margin: 0 auto;
+  font-size: 13px;
+}
+
+.empty-setup {
+  width: 100%;
+  max-width: 900px;
+  margin: 14px auto 0;
+  text-align: left;
+}
+
+.empty-setup-head {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  color: var(--dimmer);
+  margin: 0 0 8px 4px;
+}
+
+.empty-setup-body {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  width: 100%;
+}
+
+.empty-setup-body .pm-section {
+  padding: 6px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+}
+
+/* Reading order: chat settings first, then the tool servers. */
+.empty-setup-body #chat-options {
+  order: 1;
+}
+
+.empty-setup-body #pm-mcp-tools {
+  order: 2;
+}
+
+.empty-setup-body #pm-mcp-builtin {
+  order: 3;
+}
+
+.empty-setup-body #pm-mcp-custom {
+  order: 4;
+}
+
+.empty-setup-body #chat-options,
+.empty-setup-body #pm-mcp-tools {
+  grid-column: 1 / -1;
+}
+
+/* Chat settings: two columns of rows; the folder and the persona / thinking
+   chip rows take the full width. */
+.empty-setup-body #chat-options {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  column-gap: 4px;
+}
+
+.empty-setup-body #chat-options>.pm-workdir,
+.empty-setup-body #chat-options>.has-chips {
+  grid-column: 1 / -1;
+}
+
+/* Touch-friendly targets inside the inline panel (the popup keeps its
+   compact desktop sizing). */
+.empty-setup-body .pm-row {
+  min-height: 44px;
+  padding: 7px 11px;
+}
+
+.empty-setup-body .pm-item {
+  min-height: 44px;
+  padding: 10px 11px;
+}
+
+.empty-setup-body .seg button {
+  min-height: 38px;
+  padding: 0 13px;
+  font-size: 13px;
+}
+
+.empty-setup-body .pm-row select,
+.empty-setup-body .pm-row input[type="text"] {
+  min-height: 40px;
+  font-size: 13px;
+}
+
+/* Small icon buttons (folder picker, new persona) get a thumb-sized box. */
+.empty-setup-body .icon-btn.sm {
+  width: 38px;
+  height: 38px;
+  font-size: 15px;
+}
+
+.empty-setup-body .btn.sm {
+  min-height: 38px;
+  padding: 0 14px;
+}
+
+.empty-setup-body .switch {
+  width: 52px;
+  height: 30px;
+}
+
+.empty-setup-body .switch::after {
+  top: 3px;
+  left: 3px;
+  width: 24px;
+  height: 24px;
+}
+
+.empty-setup-body .switch:checked::after {
+  transform: translateX(22px);
+}
+
+/* Persona / thinking: the <select> is mirrored as one-click chips while the
+   panel is inline. The select stays in the DOM (hidden) as the source of truth
+   and returns as a dropdown in the composer popup. */
+.empty-setup-body .pm-row.has-chips {
+  flex-wrap: wrap;
+  row-gap: 6px;
+}
+
+.empty-setup-body .pm-row.has-chips>select {
+  display: none;
+}
+
+.empty-setup-body .choice-chips {
+  display: flex;
+  flex: 0 1 auto;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.choice-chip {
+  min-height: 34px;
+  padding: 0 12px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg-field);
+  color: var(--dim);
+  font: inherit;
+  font-size: 13px;
+  white-space: nowrap;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.choice-chip:hover {
+  background: var(--hover);
+  color: var(--text);
+}
+
+.choice-chip.on {
+  background: var(--bg-seg-on);
+  border-color: transparent;
+  color: var(--text);
+}
+
+.choice-chip:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--focus-ring);
+}
+
+/* Narrow screens: one column. */
+@media (max-width: 720px) {
+  .empty-setup-body,
+  .empty-setup-body #chat-options {
+    grid-template-columns: 1fr;
+  }
+
+  .empty-setup-body #chat-options>.pm-workdir,
+  .empty-setup-body #chat-options>.has-chips {
+    grid-column: auto;
+  }
+
+  /* Persona / thinking: label and the "+" button on one line, the chips on
+     their own full-width line underneath. */
+  .empty-setup-body .pm-row.has-chips {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    align-items: center;
+    row-gap: 8px;
+  }
+
+  .empty-setup-body .pm-row.has-chips>.pm-ico {
+    grid-area: 1 / 1 / 2 / 2;
+  }
+
+  .empty-setup-body .pm-row.has-chips>.pm-label {
+    grid-area: 1 / 2 / 2 / 3;
+  }
+
+  .empty-setup-body .pm-row.has-chips>.choice-chips {
+    grid-area: 2 / 1 / 3 / 4;
+  }
+
+  .empty-setup-body .pm-row.has-chips>button {
+    grid-area: 1 / 3 / 2 / 4;
+    justify-self: end;
+  }
+}
+
+/* Very narrow screens: rows that pair a label with a segmented control get two
+   lines instead of squeezing the label into a narrow column — icon + label on
+   top, controls underneath. */
+@media (max-width: 520px) {
+  .empty-setup-body .pm-row:has(.seg) {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    align-items: center;
+    row-gap: 8px;
+  }
+
+  .empty-setup-body .pm-row:has(.seg)>.pm-ico {
+    grid-area: 1 / 1 / 2 / 2;
+  }
+
+  .empty-setup-body .pm-row:has(.seg)>.pm-label {
+    grid-area: 1 / 2 / 2 / 4;
+    white-space: nowrap;
+  }
+
+  .empty-setup-body .pm-row:has(.seg)>.seg {
+    grid-area: 2 / 1 / 3 / 3;
+  }
+
+  .empty-setup-body .pm-row:has(.seg)>.switch {
+    grid-area: 2 / 3 / 3 / 4;
+    justify-self: end;
+  }
 }
 
 .msg {
   display: flex;
   gap: 12px;
-  margin: 2px 0;
+  margin: 0;
+}
+
+.msg + .msg {
+  margin-top: 20px;
 }
 
 .msg-avatar {
@@ -799,9 +1341,9 @@ a {
 }
 
 .msg.user .bubble {
-  background: var(--bg-raised);
-  border-radius: 22px;
-  padding: 9px 17px;
+  background: var(--surface-2);
+  border-radius: 18px;
+  padding: 10px 16px;
   word-break: break-word;
 }
 
@@ -820,9 +1362,10 @@ a {
   display: flex;
   align-items: center;
   gap: 8px;
+  min-height: 22px;
   font-size: 11.5px;
   color: var(--dimmer);
-  margin-bottom: 4px;
+  margin-bottom: 5px;
   opacity: 0;
   transition: opacity .12s;
 }
@@ -834,6 +1377,12 @@ a {
 
 .msg-head strong {
   font-weight: 600;
+}
+
+/* Local-time stamp: never break in the middle ("Oct 28," / "12:34 PM"). */
+.msg-time {
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
 }
 
 .msg-actions {
@@ -856,12 +1405,13 @@ a {
   color: var(--dimmer);
   cursor: pointer;
   font-size: 11.5px;
-  padding: 3px 7px;
-  border-radius: 6px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  transition: background .12s ease, color .12s ease;
 }
 
 .msg-actions button:hover {
-  background: #2f2f2f;
+  background: var(--hover-strong);
   color: var(--text);
 }
 
@@ -875,6 +1425,7 @@ a {
 
 .content {
   word-break: break-word;
+  line-height: 1.7;
 }
 
 .content>*:first-child {
@@ -886,92 +1437,130 @@ a {
 }
 
 .content p {
-  margin: 0 0 12px;
+  margin: 0 0 14px;
 }
 
 .content h1,
 .content h2,
 .content h3,
 .content h4 {
-  margin: 18px 0 8px;
-  line-height: 1.35;
+  margin: 22px 0 10px;
+  line-height: 1.3;
+  font-weight: 650;
+  letter-spacing: -.15px;
+}
+
+.content h1 {
+  font-size: 21px;
+}
+
+.content h2 {
+  font-size: 18.5px;
+}
+
+.content h3 {
+  font-size: 16.5px;
+}
+
+.content h4 {
+  font-size: 15px;
 }
 
 .content ul,
 .content ol {
-  margin: 0 0 12px;
-  padding-left: 24px;
+  margin: 0 0 14px;
+  padding-left: 23px;
 }
 
 .content li {
-  margin: 4px 0;
+  margin: 5px 0;
+}
+
+.content li>p {
+  margin-bottom: 6px;
+}
+
+.content hr {
+  border: 0;
+  border-top: 1px solid var(--border);
+  margin: 20px 0;
 }
 
 .content blockquote {
-  margin: 0 0 12px;
-  padding-left: 14px;
-  border-left: 3px solid var(--border);
+  margin: 0 0 14px;
+  padding: 2px 0 2px 15px;
+  border-left: 3px solid var(--border-strong);
   color: var(--dim);
 }
 
 .content table {
   border-collapse: collapse;
-  margin: 0 0 12px;
+  margin: 0 0 14px;
   display: block;
   overflow-x: auto;
   max-width: 100%;
+  font-size: 13.5px;
 }
 
 .content th,
 .content td {
   border: 1px solid var(--border);
-  padding: 6px 11px;
-  font-size: 13.5px;
+  padding: 7px 12px;
+  text-align: left;
 }
 
 .content th {
-  background: #2a2a2a;
+  background: var(--bg-sunken);
+  font-weight: 600;
 }
 
 .content code:not(pre code) {
-  background: #2a2a2a;
+  background: var(--bg-sunken);
+  border: 1px solid var(--border-faint);
   border-radius: 5px;
-  padding: 1.5px 5px;
+  padding: 1px 5px;
   font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
-  font-size: 13px;
+  font-size: .88em;
 }
 
 .code-block {
   position: relative;
-  background: #0d0d0d;
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  margin: 0 0 12px;
+  background: var(--bg-code);
+  border: 1px solid var(--border-soft);
+  border-radius: 12px;
+  margin: 0 0 14px;
   overflow: hidden;
 }
 
 .code-block pre {
   margin: 0;
-  padding: 12px 14px;
+  padding: 14px 16px;
   overflow-x: auto;
 }
 
 .code-block code {
   font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
   font-size: 12.8px;
+  line-height: 1.6;
 }
 
 .code-copy {
   position: absolute;
-  top: 7px;
+  top: 8px;
   right: 8px;
-  background: #2a2a2a;
-  border: 0;
+  background: var(--bg-elev);
+  border: 1px solid var(--border-soft);
   color: var(--dim);
-  border-radius: 6px;
+  border-radius: 7px;
   padding: 3px 9px;
   font-size: 11.5px;
   cursor: pointer;
+  opacity: .8;
+  transition: opacity .12s ease, color .12s ease;
+}
+
+.code-block:hover .code-copy {
+  opacity: 1;
 }
 
 .code-copy:hover {
@@ -1078,7 +1667,7 @@ a {
 }
 
 .tool-chip.is-running .tool-status {
-  color: #7cc2ff;
+  color: var(--info);
 }
 
 .tool-chip.is-running .tool-status::after {
@@ -1109,15 +1698,15 @@ a {
 }
 
 .tool-chip.is-cancelled .tool-status {
-  color: #e0a35e;
+  color: var(--warn);
 }
 
 .tool-chip.is-denied .tool-status {
-  color: #e07c7c;
+  color: var(--danger);
 }
 
 .tool-chip.is-unavailable .tool-status {
-  color: #c9b45e;
+  color: var(--warn);
 }
 
 .tool-chip .tool-cancel {
@@ -1133,9 +1722,9 @@ a {
 }
 
 .tool-chip .tool-cancel:hover {
-  color: #fff;
-  border-color: #b05656;
-  background: #4a2828;
+  color: var(--danger-fg);
+  border-color: var(--danger-border-strong);
+  background: var(--danger-bg-strong);
 }
 
 .tool-chip .tool-cancel[disabled] {
@@ -1150,7 +1739,7 @@ a {
 .tool-chip pre {
   margin: 0;
   padding: 9px 11px;
-  background: #0d0d0d;
+  background: var(--bg-code);
   border-radius: 0;
   max-height: 260px;
   overflow: auto;
@@ -1259,33 +1848,13 @@ a {
   font-size: 16px;
   cursor: pointer;
   z-index: 20;
-  box-shadow: 0 2px 10px rgba(0, 0, 0, .4);
+  box-shadow: var(--shadow-2);
   display: grid;
   place-items: center;
 }
 
 .scroll-latest.hidden {
   display: none;
-}
-
-/* Sidebar running indicator */
-.conv-running {
-  color: var(--ok);
-  margin-left: 6px;
-  font-size: 10px;
-  animation: pulse 1.2s ease-in-out infinite;
-}
-
-@keyframes pulse {
-
-  0%,
-  100% {
-    opacity: 1;
-  }
-
-  50% {
-    opacity: .3;
-  }
 }
 
 /* Context / token totals in the composer hint */
@@ -1364,7 +1933,7 @@ a {
   width: 90px;
   height: 6px;
   border-radius: 999px;
-  background: #3a3a3a;
+  background: var(--bg-track);
   overflow: hidden;
 }
 
@@ -1376,7 +1945,7 @@ a {
 }
 
 .ctx-meter.ctx-mid .ctx-fill {
-  background: #fbbf24;
+  background: var(--warn);
 }
 
 .ctx-meter.ctx-high .ctx-fill {
@@ -1404,7 +1973,7 @@ a {
   border-radius: 12px;
   padding: 6px 11px;
   font-size: 12.5px;
-  background: #2a2a2a;
+  background: var(--surface-2);
   max-width: 100%;
 }
 
@@ -1430,7 +1999,42 @@ a {
 }
 
 .file-chip-dl:hover {
-  background: #383838;
+  background: var(--bg-hover);
+}
+
+/* Produced image files: a thumbnail that opens in the fullscreen lightbox. */
+.file-chip-image {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
+  padding: 6px;
+}
+
+.file-chip-image .file-thumb {
+  display: block;
+  max-width: 240px;
+  max-height: 180px;
+  width: auto;
+  height: auto;
+  border-radius: 8px;
+  object-fit: contain;
+  background: var(--surface-1);
+  cursor: zoom-in;
+}
+
+.file-chip-image figcaption {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 2px 2px;
+}
+
+.file-chip-image.thumb-broken .file-thumb {
+  display: none;
+}
+
+.file-chip-dl:hover {
+  background: var(--bg-hover);
 }
 
 .notice {
@@ -1440,13 +2044,39 @@ a {
 }
 
 .error-box {
-  background: rgba(255, 107, 107, .1);
-  border: 1px solid rgba(255, 107, 107, .35);
-  color: #ffc9c9;
+  background: var(--danger-bg);
+  border: 1px solid var(--danger-border);
+  color: var(--danger-fg);
   border-radius: 12px;
   padding: 10px 14px;
   margin: 12px 0;
   font-size: 13.5px;
+}
+
+/* The reason can be a long upstream message; keep it readable instead of one
+   very wide line. */
+.error-box .error-text {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.error-box .error-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+/* Resume reads as a normal action, not as another warning: the red box already
+   says something went wrong, the button is the way out of it. */
+.error-box .error-resume {
+  min-height: 32px;
+  padding: 0 16px;
+}
+
+.error-box .error-resume:disabled {
+  opacity: .65;
+  cursor: default;
 }
 
 .typing {
@@ -1504,7 +2134,7 @@ a {
 .approval-card {
   max-width: var(--col);
   margin: 0 auto 10px;
-  background: #2a2a2a;
+  background: var(--surface-2);
   border: 1px solid var(--border);
   border-radius: 16px;
   padding: 12px 14px;
@@ -1527,7 +2157,7 @@ a {
 
 .approval-tool {
   font-size: 11.5px;
-  background: #1b1b1b;
+  background: var(--bg-sunken);
   border-radius: 6px;
   padding: 1px 6px;
   color: var(--dim);
@@ -1544,7 +2174,7 @@ a {
 }
 
 .approval-body {
-  background: #0d0d0d;
+  background: var(--bg-code);
   border-radius: 8px;
   padding: 9px 11px;
   max-height: 200px;
@@ -1563,7 +2193,7 @@ a {
 
 /* ───────────── Composer ───────────── */
 .composer-wrap {
-  padding: 0 16px calc(10px + var(--safe-bottom));
+  padding: 4px 16px calc(12px + var(--safe-bottom));
   flex: 0 0 auto;
   position: relative;
 }
@@ -1582,7 +2212,7 @@ a {
   display: flex;
   align-items: center;
   gap: 8px;
-  background: var(--bg-raised);
+  background: var(--surface-2);
   border: 1px solid var(--border);
   border-radius: 12px;
   padding: 6px 30px 6px 8px;
@@ -1642,8 +2272,14 @@ a {
   max-width: var(--col);
   margin: 0 auto;
   background: var(--bg-input);
+  border: 1px solid transparent;
   border-radius: 26px;
-  padding: 7px 8px;
+  padding: 6px 7px;
+  transition: border-color .15s ease;
+}
+
+.composer:focus-within {
+  border-color: var(--border-strong);
 }
 
 #input {
@@ -1682,7 +2318,7 @@ a {
 }
 
 .icon-btn:hover {
-  background: rgba(255, 255, 255, .1);
+  background: var(--hover-strong);
 }
 
 .icon-btn.sm {
@@ -1692,7 +2328,7 @@ a {
 }
 
 .icon-btn.plus {
-  border: 1px solid #565656;
+  border: 1px solid var(--border-strong);
   font-size: 20px;
 }
 
@@ -1716,7 +2352,7 @@ a {
 }
 
 .send-btn:hover {
-  background: #d9d9d9;
+  background: var(--btn-strong);
 }
 
 .send-btn.stop {
@@ -1732,13 +2368,70 @@ a {
 
 .composer-hint {
   max-width: var(--col);
-  margin: 6px auto 0;
+  margin: 8px auto 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 3px 12px;
   text-align: center;
   font-size: 11.5px;
+  line-height: 1.7;
   color: var(--dimmer);
 }
 
 .composer-hint span:empty {
+  display: none;
+}
+
+/* The chat's working folder, as a quiet pill under the message box. */
+.composer-folder {
+  display: block;
+  width: fit-content;
+  max-width: min(var(--col), 100%);
+  margin: 8px auto 0;
+  padding: 2px 10px;
+  background: var(--tint);
+  border: 1px solid var(--border-faint);
+  border-radius: 999px;
+  font-size: 11.5px;
+  line-height: 1.6;
+  color: var(--dim);
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  transition: background .12s ease, color .12s ease, border-color .12s ease;
+}
+
+.composer-folder:hover {
+  background: var(--hover);
+  border-color: var(--border);
+  color: var(--text);
+}
+
+.composer-folder.readonly {
+  cursor: default;
+}
+
+.composer-folder.readonly:hover {
+  background: var(--tint);
+  border-color: var(--border-faint);
+  color: var(--dim);
+}
+
+.admin-hint {
+  margin: 0 0 14px;
+  padding: 9px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--border, #333);
+  background: var(--tint);
+  color: var(--dim);
+  font-size: 12.5px;
+  line-height: 1.45;
+}
+
+.admin-hint.hidden {
   display: none;
 }
 
@@ -1752,12 +2445,12 @@ a {
   width: min(430px, calc(100vw - 32px));
   margin: 0 0 8px;
   z-index: 30;
-  background: #2f2f2f;
+  background: var(--bg-menu);
   border: 1px solid var(--border);
   border-radius: 20px;
-  box-shadow: 0 12px 40px rgba(0, 0, 0, .55);
+  box-shadow: var(--shadow-3);
   padding: 8px;
-  max-height: min(70vh, 560px);
+  max-height: min(72vh, 620px);
   overflow-y: auto;
 }
 
@@ -1766,7 +2459,7 @@ a {
 }
 
 .pm-section+.pm-section {
-  border-top: 1px solid #3d3d3d;
+  border-top: 1px solid var(--border-soft);
 }
 
 .pm-item {
@@ -1784,7 +2477,7 @@ a {
 }
 
 .pm-item:hover {
-  background: rgba(255, 255, 255, .08);
+  background: var(--hover);
 }
 
 .pm-ico {
@@ -1816,7 +2509,7 @@ a {
 .pm-row input[type="text"] {
   flex: 1;
   min-width: 0;
-  background: #212121;
+  background: var(--bg-field);
   border: 1px solid var(--border);
   border-radius: 9px;
   padding: 6px 10px;
@@ -1825,7 +2518,7 @@ a {
 }
 
 .pm-row select {
-  background: #212121;
+  background: var(--bg-field);
   border: 1px solid var(--border);
   border-radius: 9px;
   padding: 5px 8px;
@@ -1845,7 +2538,7 @@ a {
 /* Segmented button toggle (two mutually exclusive options). */
 .seg {
   display: inline-flex;
-  background: #212121;
+  background: var(--bg-field);
   border: 1px solid var(--border);
   border-radius: 10px;
   padding: 2px;
@@ -1869,7 +2562,7 @@ a {
 }
 
 .seg button.on {
-  background: #4d4d4d;
+  background: var(--bg-seg-on);
   color: var(--text);
 }
 
@@ -1884,7 +2577,7 @@ a {
   border-radius: 999px;
   cursor: pointer;
   position: relative;
-  background: #5a5a5a;
+  background: var(--bg-switch-off);
   transition: background .15s ease;
   outline: none;
 }
@@ -1911,7 +2604,7 @@ a {
 }
 
 .switch:focus-visible {
-  box-shadow: 0 0 0 2px rgba(255, 255, 255, .35);
+  box-shadow: 0 0 0 2px var(--focus-ring);
 }
 
 /* Keep the switch itself usable (undimmed) when a row is off. */
@@ -1945,6 +2638,13 @@ a {
   display: none;
 }
 
+/* With the MCP tools toggle off nothing is sent, so the server lists read as
+   inert — they stay clickable so a chat can be set up before the first send. */
+#pm-mcp-tools:has(#chk-tools:not(:checked))~#pm-mcp-builtin,
+#pm-mcp-tools:has(#chk-tools:not(:checked))~#pm-mcp-custom {
+  opacity: .5;
+}
+
 .pm-mcp-item {
   display: flex;
   align-items: center;
@@ -1967,6 +2667,37 @@ a {
   flex: 0 0 auto;
 }
 
+/* Each server row carries its own switch: on/off for this chat only. The row
+   is a <label>, so tapping anywhere on it flips the switch. */
+.pm-mcp-item {
+  cursor: pointer;
+  border-radius: 10px;
+}
+
+.pm-mcp-item:hover {
+  background: var(--hover);
+}
+
+.pm-mcp-item.off .pm-mcp-name {
+  color: var(--dim);
+}
+
+.pm-mcp-item .switch {
+  margin-left: 2px;
+}
+
+/* Blank-chat panel: 44 px rows, the name and count get the room they need. */
+.empty-setup-body .pm-mcp-item {
+  min-height: 44px;
+  padding: 4px 8px 4px 11px;
+  gap: 10px;
+}
+
+.empty-setup-body .pm-mcp-item:has(.switch:disabled) {
+  cursor: default;
+  opacity: .65;
+}
+
 .pm-mcp-empty {
   padding: 4px 11px 6px;
   color: var(--dim);
@@ -1975,7 +2706,7 @@ a {
 
 /* ───────────── Buttons ───────────── */
 .btn {
-  background: #2f2f2f;
+  background: var(--btn-bg);
   border: 1px solid var(--border);
   color: var(--text);
   border-radius: 10px;
@@ -1985,7 +2716,7 @@ a {
 }
 
 .btn:hover {
-  background: #3d3d3d;
+  background: var(--btn-hover);
 }
 
 .btn.sm {
@@ -2006,17 +2737,17 @@ a {
 }
 
 .btn-primary:hover {
-  background: #d9d9d9;
+  background: var(--btn-strong);
 }
 
 .btn-danger {
-  background: rgba(255, 107, 107, .14);
-  border-color: rgba(255, 107, 107, .4);
-  color: #ffb4b4;
+  background: var(--danger-bg);
+  border-color: var(--danger-border);
+  color: var(--danger-fg);
 }
 
 .btn-danger:hover {
-  background: rgba(255, 107, 107, .25);
+  background: var(--danger-bg-strong);
 }
 
 .btn-block {
@@ -2025,17 +2756,18 @@ a {
 
 /* ───────────── Dialogs ───────────── */
 .modal {
-  background: #2a2a2a;
+  background: var(--bg-elev);
   color: var(--text);
   border: 1px solid var(--border);
   border-radius: 18px;
+  box-shadow: var(--shadow-3);
   padding: 0;
   width: min(760px, 94vw);
   max-height: 90dvh;
 }
 
 .modal::backdrop {
-  background: rgba(0, 0, 0, .65);
+  background: var(--backdrop-strong);
 }
 
 .modal form {
@@ -2048,13 +2780,28 @@ a {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 0px 18px;
-  border-bottom: 1px solid #3a3a3a;
+  padding: 12px 18px;
+  border-bottom: 1px solid var(--border-soft);
 }
 
-.modal-head h2 {
+.modal-head h2,
+.modal-head h3 {
   margin: 0;
   font-size: 16px;
+  font-weight: 600;
+  letter-spacing: -.1px;
+}
+
+/* Close buttons are plain glyphs, not filled buttons. */
+.modal-head .btn-ghost {
+  background: transparent;
+  border-color: transparent;
+  color: var(--dim);
+}
+
+.modal-head .btn-ghost:hover {
+  background: var(--hover);
+  color: var(--text);
 }
 
 .modal-body {
@@ -2065,7 +2812,7 @@ a {
 .modal-body section+section {
   margin-top: 26px;
   padding-top: 20px;
-  border-top: 1px solid #3a3a3a;
+  border-top: 1px solid var(--border-soft);
 }
 
 .modal-body h3 {
@@ -2101,7 +2848,7 @@ a {
 .row input[type="search"],
 .row select,
 .row textarea {
-  background: #212121;
+  background: var(--bg-field);
   border: 1px solid var(--border);
   color: var(--text);
   border-radius: 10px;
@@ -2124,7 +2871,7 @@ a {
 .field input:focus,
 .field textarea:focus,
 .field select:focus {
-  border-color: #565656;
+  border-color: var(--border-strong);
 }
 
 .field small {
@@ -2150,7 +2897,7 @@ a {
 }
 
 .test-result {
-  background: #1b1b1b;
+  background: var(--bg-sunken);
   border: 1px solid var(--border);
   border-radius: 10px;
   padding: 10px 12px;
@@ -2170,12 +2917,69 @@ a {
   margin-bottom: 14px;
 }
 
+/* One card per configured MCP server: name + status, then its tool names and
+   actions. The tool tags wrap, so a server with a dozen tools stays readable. */
+#mcp-list .list-card {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  background: var(--bg-field);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 10px 12px;
+}
+
+#mcp-list .lc-main {
+  flex: 1 1 240px;
+  min-width: 0;
+}
+
+#mcp-list .lc-title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+#mcp-list .lc-sub {
+  margin-top: 2px;
+  color: var(--dimmer);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+#mcp-list .lc-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+#mcp-list .tool-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 6px;
+}
+
+#mcp-list .tool-tags code {
+  font-size: 11px;
+  padding: 2px 6px;
+  border-radius: 6px;
+  background: var(--tint);
+  border: 1px solid var(--border-faint);
+  color: var(--dim);
+}
+
 .prompt-item,
 .mcp-item {
   display: flex;
   align-items: center;
   gap: 10px;
-  background: #212121;
+  background: var(--bg-field);
   border: 1px solid var(--border);
   border-radius: 12px;
   padding: 9px 12px;
@@ -2185,7 +2989,7 @@ a {
 
 .prompt-item.active,
 .mcp-item.active {
-  border-color: #6b6b6b;
+  border-color: var(--border-stronger);
 }
 
 .prompt-item>div:first-child,
@@ -2215,7 +3019,7 @@ a {
 }
 
 .prompt-editor {
-  background: #212121;
+  background: var(--bg-field);
   border: 1px solid var(--border);
   border-radius: 14px;
   padding: 14px;
@@ -2230,7 +3034,7 @@ a {
 #folder-path,
 #files-path {
   flex: 1;
-  background: #212121;
+  background: var(--bg-field);
   border: 1px solid var(--border);
   color: var(--text);
   border-radius: 10px;
@@ -2251,7 +3055,7 @@ a {
 }
 
 .file-list {
-  background: #212121;
+  background: var(--bg-field);
   border: 1px solid var(--border);
   border-radius: 12px;
   max-height: 44vh;
@@ -2264,7 +3068,7 @@ a {
   align-items: center;
   gap: 9px;
   padding: 7px 12px;
-  border-bottom: 1px solid #2c2c2c;
+  border-bottom: 1px solid var(--border-faint);
   font-size: 13px;
 }
 
@@ -2273,7 +3077,7 @@ a {
 }
 
 .file-row:hover {
-  background: #2a2a2a;
+  background: var(--bg-elev);
 }
 
 .file-ico {
@@ -2291,7 +3095,7 @@ a {
 }
 
 .file-name:hover {
-  color: #fff;
+  color: var(--text-strong);
 }
 
 .file-meta {
@@ -2318,9 +3122,9 @@ a {
 }
 
 .file-acts .danger {
-  background: rgba(255, 107, 107, .28);
-  border-color: rgba(255, 107, 107, .75);
-  color: #ffdada;
+  background: var(--danger-bg-strong);
+  border-color: var(--danger-border-strong);
+  color: var(--danger-fg);
 }
 
 .file-preview {
@@ -2335,7 +3139,7 @@ a {
 
 .file-preview-body {
   margin: 0;
-  background: #0d0d0d;
+  background: var(--bg-code);
   border: 1px solid var(--border);
   border-radius: 10px;
   padding: 10px 12px;
@@ -2345,11 +3149,193 @@ a {
   white-space: pre-wrap;
 }
 
+/* Markdown / HTML preview: rendered view ⇄ source, switched with two tabs. */
+.file-view-tabs {
+  display: flex;
+  gap: 4px;
+}
+
+.file-view-tabs .btn.on {
+  background: var(--bg-seg-on);
+  border-color: var(--border-stronger);
+  color: var(--text-strong);
+}
+
+.file-preview-content {
+  min-height: 120px;
+}
+
+.md-preview {
+  background: var(--bg-field);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px 14px;
+  max-height: 40vh;
+  overflow: auto;
+  font-size: 13.5px;
+  line-height: 1.6;
+}
+
+.md-preview > :first-child {
+  margin-top: 0;
+}
+
+.md-preview > :last-child {
+  margin-bottom: 0;
+}
+
+.html-preview {
+  width: 100%;
+  height: 40vh;
+  min-height: 220px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: #ffffff;
+}
+
+.file-preview-image {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  background: var(--bg-code);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px;
+  max-height: 46vh;
+  overflow: auto;
+}
+
+.file-preview-image img {
+  max-width: 100%;
+  max-height: 42vh;
+  object-fit: contain;
+  border-radius: 6px;
+}
+
+/* Per-message list of files a turn changed (under the user message). */
+.file-changes {
+  margin-top: 8px;
+  background: var(--bg-field);
+  border: 1px solid var(--border-faint);
+  border-radius: 10px;
+  padding: 6px 10px;
+  font-size: 12.5px;
+}
+
+.file-changes summary {
+  cursor: pointer;
+  color: var(--dim);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 26px;
+}
+
+.file-changes summary:hover {
+  color: var(--text);
+}
+
+.file-changes-ico {
+  font-size: 13px;
+}
+
+.file-changes-list {
+  margin-top: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.file-change-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 3px 0;
+}
+
+.file-change-name {
+  flex: 1;
+  min-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
+  font-size: 12px;
+  color: var(--text);
+}
+
+.file-change-stats {
+  font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
+  font-size: 11.5px;
+  color: var(--dim);
+  white-space: nowrap;
+}
+
+.file-change-row.is-reverted .file-change-name {
+  color: var(--dimmer);
+  text-decoration: line-through;
+}
+
+.file-change-row.is-reverted .file-change-stats {
+  color: var(--ok);
+}
+
+/* Comparison dialog */
+.diff-meta {
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.diff-body {
+  background: var(--bg-code);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  max-height: 60vh;
+  overflow: auto;
+  padding: 8px 0;
+  font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.diff-line {
+  display: flex;
+  gap: 8px;
+  padding: 0 10px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.diff-line.add {
+  background: var(--diff-add-bg);
+  color: var(--diff-add-fg);
+}
+
+.diff-line.del {
+  background: var(--diff-del-bg);
+  color: var(--diff-del-fg);
+}
+
+.diff-sign {
+  flex: none;
+  width: 12px;
+  text-align: center;
+  opacity: .75;
+  user-select: none;
+}
+
+.diff-text {
+  flex: 1;
+  min-width: 0;
+}
+
 .file-rename {
   flex: 1;
   min-width: 0;
-  background: #212121;
-  border: 1px solid #6b6b6b;
+  background: var(--bg-field);
+  border: 1px solid var(--border-stronger);
   color: var(--text);
   border-radius: 8px;
   padding: 4px 8px;
@@ -2361,15 +3347,15 @@ a {
 .toast {
   position: fixed;
   left: 50%;
-  bottom: 26px;
+  bottom: calc(96px + var(--safe-bottom));
   transform: translateX(-50%);
-  background: #f9f9f9;
-  color: #111;
+  background: var(--toast-bg);
+  color: var(--toast-fg);
   border-radius: 12px;
   padding: 10px 18px;
   font-size: 13.5px;
   z-index: 100;
-  box-shadow: 0 8px 30px rgba(0, 0, 0, .5);
+  box-shadow: var(--shadow-2);
   max-width: 90vw;
 }
 
@@ -2389,19 +3375,64 @@ a {
     margin-left: 0 !important;
     transform: translateX(-100%);
     transition: transform .2s ease;
-    box-shadow: 0 0 40px rgba(0, 0, 0, .6);
+    box-shadow: var(--sidebar-shadow);
   }
 
   #app.sidebar-open #sidebar {
     transform: none;
   }
 
-  .messages {
-    padding: 4px 12px 10px;
+  /* The title, the AI button, export and the model picker no longer fit on one
+     line on a phone, so the model picker drops to a second row. */
+  #chat-header {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto auto;
+    grid-template-areas:
+      "toggle title ai export"
+      "toggle model model model";
+    align-items: center;
+    gap: 2px 8px;
+    padding: 6px 10px 6px;
   }
 
-  .msg {
-    margin: 15px 0;
+  #btn-toggle-sidebar {
+    grid-area: toggle;
+  }
+
+  .chat-title-wrap {
+    grid-area: title;
+  }
+
+  #btn-ai-title {
+    grid-area: ai;
+  }
+
+  #btn-export-chat {
+    grid-area: export;
+  }
+
+  .model-select {
+    grid-area: model;
+    justify-self: start;
+    max-width: 100%;
+    height: 26px;
+    margin-top: 2px;
+    border-color: transparent;
+    padding: 0 4px 0 0;
+    font-size: 12.5px;
+  }
+
+  .model-select:hover {
+    border-color: transparent;
+    background: transparent;
+  }
+
+  .messages {
+    padding: 8px 12px 14px;
+  }
+
+  .msg + .msg {
+    margin-top: 18px;
   }
 
   .msg.user .msg-body {
@@ -2410,10 +3441,37 @@ a {
 
   .msg-head {
     opacity: 1;
+    font-size: 11px;
+    gap: 6px;
+    flex-wrap: wrap;
+    row-gap: 2px;
+  }
+
+  .msg-head > * {
+    white-space: nowrap;
+  }
+
+  .msg-actions {
+    gap: 0;
+  }
+
+  .msg-actions button {
+    padding: 4px 6px;
+    font-size: 11px;
   }
 
   .composer-wrap {
-    padding: 0 10px calc(8px + var(--safe-bottom));
+    padding: 4px 10px calc(10px + var(--safe-bottom));
+  }
+
+  .composer-hint {
+    margin-top: 6px;
+    gap: 2px 10px;
+    font-size: 11px;
+  }
+
+  .composer-folder {
+    margin-top: 6px;
   }
 
   .plus-menu {
@@ -2424,11 +3482,6 @@ a {
 
   .chat-sub {
     display: none;
-  }
-
-  .model-select {
-    max-width: 118px;
-    font-size: 12.5px;
   }
 
   .modal {
@@ -2455,6 +3508,10 @@ a {
   .bubble img {
     max-width: 78vw;
   }
+
+  .toast {
+    bottom: calc(108px + var(--safe-bottom));
+  }
 }
 
 @media (max-width: 420px) {
@@ -2468,6 +3525,20 @@ a {
 
   .empty-state {
     padding-top: 7vh;
+  }
+
+  /* The change list must not squeeze the filename to nothing on a phone. */
+  .file-change-name {
+    flex: 1 1 100%;
+  }
+
+  .file-change-row .btn {
+    margin-left: 0;
+  }
+
+  .diff-line {
+    padding: 0 6px;
+    gap: 5px;
   }
 }
 
@@ -2532,5 +3603,182 @@ a {
   * {
     animation-duration: .01ms !important;
     transition-duration: .01ms !important;
+  }
+}
+/* --------- Image lightbox (fullscreen viewer) --------- */
+.bubble img {
+  cursor: zoom-in;
+}
+
+.lightbox {
+  background: transparent;
+  border: none;
+  padding: 0;
+  max-width: none;
+  max-height: none;
+  width: 100vw;
+  height: 100dvh;
+  margin: 0;
+  overflow: hidden;
+}
+
+.lightbox::backdrop {
+  background: rgba(0, 0, 0, .9);
+}
+
+.lightbox img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  cursor: zoom-out;
+}
+
+.lightbox-close {
+  position: fixed;
+  top: 14px;
+  right: 18px;
+  z-index: 1;
+  background: rgba(0, 0, 0, .5);
+  color: #fff;
+  border: 1px solid rgba(255, 255, 255, .25);
+  border-radius: 999px;
+  width: 40px;
+  height: 40px;
+  font-size: 18px;
+  cursor: pointer;
+}
+
+.lightbox-close:hover {
+  background: rgba(255, 255, 255, .18);
+}
+
+/* ───────────── Command palette (Ctrl/Cmd+K) ───────────── */
+.palette {
+  background: transparent;
+  border: 0;
+  padding: 0;
+  width: min(640px, 92vw);
+  margin-top: 12vh;
+  color: var(--text);
+  overflow: visible;
+}
+
+.palette::backdrop {
+  background: var(--backdrop);
+}
+
+.palette-box {
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  box-shadow: var(--shadow-3);
+  overflow: hidden;
+}
+
+#palette-input {
+  width: 100%;
+  border: 0;
+  border-bottom: 1px solid var(--border-soft);
+  background: transparent;
+  color: var(--text);
+  padding: 15px 18px;
+  font-size: 15px;
+  outline: none;
+}
+
+#palette-input::placeholder {
+  color: var(--dimmer);
+}
+
+.palette-list {
+  max-height: min(52vh, 420px);
+  overflow-y: auto;
+  padding: 6px;
+}
+
+.palette-group {
+  padding: 8px 12px 4px;
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: .08em;
+  color: var(--dimmer);
+}
+
+.palette-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 12px;
+  border-radius: 9px;
+  cursor: pointer;
+  font-size: 13.5px;
+}
+
+.palette-item.active {
+  background: var(--hover-strong);
+}
+
+.pi-ico {
+  flex: 0 0 20px;
+  width: 20px;
+  text-align: center;
+  font-size: 14px;
+}
+
+.pi-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pi-hint {
+  flex: 0 0 auto;
+  font-size: 11px;
+  color: var(--dimmer);
+  white-space: nowrap;
+}
+
+.palette-empty {
+  padding: 20px;
+  text-align: center;
+  font-size: 13px;
+  color: var(--dimmer);
+}
+
+.palette-foot {
+  display: flex;
+  justify-content: flex-end;
+  gap: 14px;
+  padding: 8px 14px;
+  border-top: 1px solid var(--border-soft);
+  font-size: 11px;
+  color: var(--dimmer);
+}
+
+.palette-foot kbd {
+  font-family: inherit;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0 4px;
+  font-size: 10.5px;
+}
+
+/* Header export button matches the other small header controls. */
+.header-btn {
+  padding: 0 10px;
+}
+
+.header-btn:disabled {
+  opacity: .45;
+  cursor: default;
+}
+
+/* The header is tight on phones: keep the export glyph, drop the word. */
+@media (max-width: 560px) {
+  .header-btn .hb-label {
+    display: none;
   }
 }

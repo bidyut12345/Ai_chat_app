@@ -62,6 +62,10 @@ function makeClient() {
       const text = await res.text();
       let data = null; try { data = text ? JSON.parse(text) : null; } catch { data = { raw: text }; }
       return { ok: res.ok, status: res.status, data };
+    },
+    /** Raw response, for download endpoints that are not JSON. */
+    async raw(p) {
+      return fetch(`${BASE}/api${p}`, { headers: cookie ? { Cookie: cookie } : {} });
     }
   };
 }
@@ -90,6 +94,7 @@ async function main() {
   const status = await anon.req('/auth/status');
   check('status: not authenticated', status.data?.authenticated === false, JSON.stringify(status.data));
   check('status: needs_setup true (no users yet)', status.data?.needs_setup === true, JSON.stringify(status.data));
+  check('status: sign-up open for the first account', status.data?.open_registration === true, JSON.stringify(status.data));
 
   console.log('\n== First user becomes admin and claims orphan chats ==');
   const alice = makeClient();
@@ -101,20 +106,63 @@ async function main() {
   check('alice sees the claimed chat', Array.isArray(aliceList.data) && aliceList.data.length === 1, JSON.stringify(aliceList.data));
   const aliceConvId = aliceList.data?.[0]?.id;
 
-  console.log('\n== Second user is isolated and non-admin ==');
+  console.log('\n== Registration is closed once the first admin exists ==');
   const bob = makeClient();
   const reg2 = await bob.req('/auth/register', { method: 'POST', body: { username: 'bob', password: 'hunter2!!' } });
-  check('register second user OK', reg2.status === 201, JSON.stringify(reg2.data));
-  check('second user NOT admin', reg2.data?.user?.is_admin === false, JSON.stringify ? JSON.stringify(reg2.data) : '');
-  check('second user claimed nothing', reg2.data?.claimed_conversations === 0, JSON.stringify(reg2.data));
+  check('second registration rejected while sign-ups are closed (403)', reg2.status === 403, JSON.stringify(reg2.data));
+  const closedStatus = await anon.req('/auth/status');
+  check('status: open_registration false', closedStatus.data?.open_registration === false, JSON.stringify(closedStatus.data));
+
+  // The admin opens sign-ups from Settings (the test writes the setting through
+  // the same API the UI uses).
+  const openReg = await alice.req('/settings', { method: 'PUT', body: { allow_registration: '1' } });
+  check('admin enables sign-ups', openReg.ok === true, JSON.stringify(openReg.data));
+  check('settings echo never includes the raw API key', !('api_key' in (openReg.data?.settings || {})), JSON.stringify(openReg.data?.settings));
+  const reg2b = await bob.req('/auth/register', { method: 'POST', body: { username: 'bob', password: 'hunter2!!' } });
+  check('register second user OK once enabled', reg2b.status === 201, JSON.stringify(reg2b.data));
+  check('second user NOT admin', reg2b.data?.user?.is_admin === false, JSON.stringify(reg2b.data));
+  check('second user claimed nothing', reg2b.data?.claimed_conversations === 0, JSON.stringify(reg2b.data));
   const bobList = await bob.req('/conversations');
   check('bob sees an empty list', Array.isArray(bobList.data) && bobList.data.length === 0, JSON.stringify(bobList.data));
   const bobTouch = await bob.req(`/conversations/${aliceConvId}`);
   check('bob cannot read alice chat (404)', bobTouch.status === 404, `status=${bobTouch.status}`);
+  const bobExport = await bob.raw(`/conversations/${aliceConvId}/export?format=md`);
+  check('bob cannot export alice chat (404)', bobExport.status === 404, `status=${bobExport.status}`);
+  const aliceExport = await alice.raw(`/conversations/${aliceConvId}/export?format=md`);
+  check('alice can export her own chat', aliceExport.status === 200 && /attachment/.test(aliceExport.headers.get('content-disposition') || ''), `status=${aliceExport.status}`);
   const bobAdmin = await bob.req('/auth/users');
   check('bob cannot list users (403)', bobAdmin.status === 403, `status=${bobAdmin.status}`);
   const bobCreate = await bob.req('/auth/users', { method: 'POST', body: { username: 'mallory', password: 'abc1234' } });
   check('bob cannot create users (403)', bobCreate.status === 403, `status=${bobCreate.status}`);
+
+  console.log('\n== Admin-only routes are actually admin-only ==');
+  const bobSettings = await bob.req('/settings', { method: 'PUT', body: { model: 'hijacked-model' } });
+  check('bob cannot change global settings (403)', bobSettings.status === 403, `status=${bobSettings.status}`);
+  const bobTest = await bob.req('/settings/test', { method: 'POST', body: {} });
+  check('bob cannot repoint/test the AI server (403)', bobTest.status === 403, `status=${bobTest.status}`);
+  const bobHealth = await bob.req('/settings/health');
+  check('bob can still read the read-only server health', bobHealth.status === 200, `status=${bobHealth.status}`);
+  const bobMcpAdd = await bob.req('/mcp', { method: 'POST', body: { name: 'evil', transport: 'stdio', command: 'whoami' } });
+  check('bob cannot add an MCP server (403)', bobMcpAdd.status === 403, `status=${bobMcpAdd.status}`);
+  const bobMcpCall = await bob.req('/mcp/1/call', { method: 'POST', body: { tool: 'run_command', arguments: { command: 'whoami' } } });
+  check('bob cannot call MCP tools directly (403)', bobMcpCall.status === 403, `status=${bobMcpCall.status}`);
+  const bobFs = await bob.req('/fs/browse');
+  check('bob cannot browse the server disk (403)', bobFs.status === 403, `status=${bobFs.status}`);
+
+  console.log('\n== MCP secrets are only visible to admins ==');
+  db.prepare(
+    "INSERT INTO mcp_servers (name, transport, url, headers, env, enabled) VALUES ('secretsrv', 'http', 'http://127.0.0.1:9/mcp', ?, ?, 0)"
+  ).run('{"Authorization":"Bearer tok"}', '{"API_KEY":"sk-1"}');
+  const aliceMcp = await alice.req('/mcp');
+  const bobMcp = await bob.req('/mcp');
+  const aliceSecret = (aliceMcp.data || []).find((s) => s.name === 'secretsrv');
+  const bobSecret = (bobMcp.data || []).find((s) => s.name === 'secretsrv');
+  check('admin sees MCP env/headers', aliceSecret?.headers?.Authorization === 'Bearer tok', JSON.stringify(aliceSecret));
+  check(
+    'non-admin MCP list has env/headers scrubbed',
+    !bobSecret || (Object.keys(bobSecret.env || {}).length === 0 && Object.keys(bobSecret.headers || {}).length === 0),
+    JSON.stringify(bobSecret)
+  );
 
   console.log('\n== Login / logout / passwords ==');
   const badLogin = await makeClient().req('/auth/login', { method: 'POST', body: { username: 'alice', password: 'wrong' } });

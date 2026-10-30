@@ -93,7 +93,9 @@ export async function chatCompletion(cfg, body, { stream = false, signal } = {})
     method: 'POST',
     headers: { ...headers(cfg.apiKey), Accept: stream ? 'text/event-stream' : 'application/json' },
     body: JSON.stringify(payload),
-    signal: signal || AbortSignal.timeout(600000)
+    // The caller's signal (Stop) must not disable the upstream timeout: combine
+    // both so a hung model server eventually fails instead of hanging forever.
+    signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(600000)]) : AbortSignal.timeout(600000)
   });
   if (!res.ok) {
     const text = await res.text().catch(() => '');
@@ -112,7 +114,7 @@ export async function chatCompletion(cfg, body, { stream = false, signal } = {})
         method: 'POST',
         headers: { ...headers(cfg.apiKey), Accept: stream ? 'text/event-stream' : 'application/json' },
         body: JSON.stringify(payload),
-        signal: signal || AbortSignal.timeout(600000)
+        signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(600000)]) : AbortSignal.timeout(600000)
       });
       if (res.ok) {
         if (stream) return res;
@@ -133,7 +135,7 @@ export async function chatCompletion(cfg, body, { stream = false, signal } = {})
  * Calls onDelta(chunkText) as text arrives and resolves with the fully
  * assembled assistant message ({ content, tool_calls }).
  */
-export async function consumeChatStream(res, onDelta, onReasoning) {
+export async function consumeChatStream(res, onDelta, onReasoning, onToolCallDelta) {
   const reader = res.body.getReader();
   const decoder = new TextDecoder();
   let buf = '';
@@ -200,7 +202,7 @@ export async function consumeChatStream(res, onDelta, onReasoning) {
             const idx = tc.index ?? 0;
             if (!toolCalls[idx]) {
               toolCalls[idx] = {
-                id: tc.id || `call_${idx}_${Date.now()}`,
+                id: tc.id || '',
                 type: 'function',
                 function: { name: '', arguments: '' }
               };
@@ -208,11 +210,25 @@ export async function consumeChatStream(res, onDelta, onReasoning) {
             if (tc.id) toolCalls[idx].id = tc.id;
             if (tc.function?.name) toolCalls[idx].function.name += tc.function.name;
             if (tc.function?.arguments) toolCalls[idx].function.arguments += tc.function.arguments;
+            // Let the UI show a "generating" chip while the model is still
+            // streaming the (often huge) arguments of a tool call. Wait for the
+            // server's real call id: a synthetic one here would key the chip
+            // differently from the later `tool_call` event and leave it stuck.
+            const call = toolCalls[idx];
+            if (onToolCallDelta && call.id && (tc.function?.name || tc.function?.arguments)) {
+              onToolCallDelta({ index: idx, id: call.id, name: call.function.name, argsDelta: tc.function.arguments || '' });
+            }
           }
         }
       }
     }
   }
+  // Servers that omit tool-call ids would have every call dropped downstream;
+  // assign stable ones now (after streaming, so no chip was keyed on them).
+  const calls = toolCalls.filter((t) => t && t.function.name);
+  calls.forEach((t, i) => {
+    if (!t.id) t.id = `call_${i}_${Date.now()}`;
+  });
   return {
     content,
     reasoning,
@@ -221,7 +237,7 @@ export async function consumeChatStream(res, onDelta, onReasoning) {
     streamError,
     sawDone,
     sawAnyChunk,
-    tool_calls: toolCalls.filter((t) => t && t.function.name).length ? toolCalls : undefined
+    tool_calls: calls.length ? calls : undefined
   };
 }
 

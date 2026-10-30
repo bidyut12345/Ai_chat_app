@@ -28,6 +28,7 @@ function turnConfig(conversation, body) {
  *   content?: string,          // user message text (omit when regenerate=true)
  *   image_url?: string,        // optional image for vision-capable servers
  *   regenerate?: boolean,      // drop the last assistant reply and re-answer
+ *   continue?: boolean,        // continue the last assistant reply without a new user turn
  *   use_tools?: boolean,       // expose connected MCP tools (default true)
  *   extra_system?: string,     // one-off instruction appended to the system prompt
  *   model?, temperature?, max_tokens?, reasoning_effort?
@@ -39,11 +40,23 @@ function turnConfig(conversation, body) {
  * connection never stops the generation.
  */
 router.post('/', async (req, res) => {
-  const { conversation_id, content, image_url, regenerate = false, use_tools = true, extra_system } = req.body || {};
+  const { conversation_id, content, image_url, regenerate = false, continue: cont = false, use_tools = true, extra_system } = req.body || {};
 
   const conversation = loadConversation(Number(conversation_id));
   if (!conversation || conversation.user_id !== req.user.id) {
     return res.status(404).json({ error: 'conversation not found' });
+  }
+
+  if (cont && regenerate) {
+    return res.status(400).json({ error: 'continue and regenerate cannot be combined' });
+  }
+  if (cont) {
+    const last = db
+      .prepare('SELECT role FROM messages WHERE conversation_id = ? ORDER BY id DESC LIMIT 1')
+      .get(conversation.id);
+    if (!last || last.role !== 'assistant') {
+      return res.status(400).json({ error: 'The last message is not an assistant reply to continue.' });
+    }
   }
 
   const cfg = turnConfig(conversation, req.body);
@@ -51,40 +64,83 @@ router.post('/', async (req, res) => {
     return res.status(400).json({ error: 'No model selected. Set a model in Settings (or pick one for this chat).' });
   }
 
+  // A turn can only have one reply in flight. Without this check a second
+  // message would be stored *before* the running reply and never answered,
+  // because startRun() joins the existing run instead of starting a new one.
+  if (activeRuns().some((r) => r.conversation_id === conversation.id)) {
+    return res.status(409).json({
+      error: 'A reply is already being generated for this chat. Wait for it to finish or press Stop.'
+    });
+  }
+
   // A chat is "untitled" until the user names it or it gets its first message.
   // We title that first turn with AI after the reply, so capture the moment here.
   const wasUntitled = !conversation.title || conversation.title === 'New chat';
 
+  // The message this turn belongs to. File changes are recorded against it so
+  // the browser can show a diff under the user message that asked for them.
+  let turnMessageId = null;
+
   if (regenerate) {
-    // Remove the trailing assistant message so the model answers again.
+    // Remove the trailing assistant message so the model answers again — but
+    // only when it belongs to the last user turn. Regenerating an *older* user
+    // message (the browser truncates everything after it first) must not delete
+    // that turn's own reply.
+    const lastUser = db
+      .prepare("SELECT id FROM messages WHERE conversation_id = ? AND role = 'user' ORDER BY id DESC LIMIT 1")
+      .get(conversation.id);
     const last = db
       .prepare("SELECT id FROM messages WHERE conversation_id = ? AND role = 'assistant' ORDER BY id DESC LIMIT 1")
       .get(conversation.id);
-    if (last) db.prepare('DELETE FROM messages WHERE id = ?').run(last.id);
-  } else {
+    if (last && (!lastUser || last.id > lastUser.id)) {
+      db.prepare('DELETE FROM messages WHERE id = ?').run(last.id);
+    }
+  } else if (!cont) {
     const text = String(content ?? '').trim();
     if (!text && !image_url) {
       return res.status(400).json({ error: 'content is required' });
     }
-    db.prepare('INSERT INTO messages (conversation_id, role, content, image_url) VALUES (?, ?, ?, ?)').run(
+    const info = db.prepare('INSERT INTO messages (conversation_id, role, content, image_url) VALUES (?, ?, ?, ?)').run(
       conversation.id,
       'user',
       text,
       image_url || null
     );
+    turnMessageId = Number(info.lastInsertRowid);
     // Immediate placeholder so the sidebar isn't a row of "New chat" while the
     // AI title is generated after the reply.
     if (wasUntitled) autoTitle(conversation, text);
   }
 
+  // Regenerate / continue have no new user row: attribute their file changes to
+  // the most recent user message.
+  if (turnMessageId == null) {
+    const lastUser = db
+      .prepare("SELECT id FROM messages WHERE conversation_id = ? AND role = 'user' ORDER BY id DESC LIMIT 1")
+      .get(conversation.id);
+    turnMessageId = lastUser ? Number(lastUser.id) : null;
+  }
+
+  // A continuation is a normal turn without a user row: the stored history
+  // already ends with the partial reply, so the model just picks it up. The
+  // instruction is appended to the system prompt for this turn only.
+  const continuation = cont
+    ? 'Continue the previous assistant reply exactly where it stopped. Do not repeat text that is already there, do not apologize, and do not start over. If it stopped mid-sentence, resume mid-sentence.'
+    : null;
+  const extraSystem = [extra_system, continuation].filter(Boolean).join('\n\n') || undefined;
+
+  // The sidebar sorts by updated_at, so a new turn must bubble the chat up.
+  db.prepare("UPDATE conversations SET updated_at = datetime('now') WHERE id = ?").run(conversation.id);
+
   const run = startRun({
     conversation,
     cfg,
     useTools: use_tools !== false,
-    extraSystem: extra_system,
+    extraSystem,
     // Name the chat with AI after the first turn (only when it's still untitled
-    // and this is a fresh user message, not a regenerate).
-    aiTitle: wasUntitled && !regenerate ? String(content ?? '').trim() : null
+    // and this is a fresh user message, not a regenerate/continue).
+    aiTitle: wasUntitled && !regenerate && !cont ? String(content ?? '').trim() : null,
+    turnMessageId
   });
 
   res.json({ ok: true, running: true, conversation_id: conversation.id, started_at: run.startedAt });

@@ -82,9 +82,13 @@ VirtualBox) also appear in that list.
 > `.\install-autostart.ps1` once to widen any older rule, or move the connection to the
 > Private profile: `Set-NetConnectionProfile -InterfaceAlias "<adapter>" -NetworkCategory Private`.
 
-> ⚠ **There is no login in this app.** Opening 3000 and 8080 to the network means
-> anyone on it can chat, spend your GPU, and call the model's own API. Keep it on a
-> trusted/private network, or restrict the two firewall rules to your subnet:
+> ⚠ **The app has its own accounts.** The first person to open it creates the
+> administrator account; after that, new sign-ups are **off** unless an admin enables
+> *Settings → Accounts → Allow new sign-ups* (or creates accounts directly in the user
+> menu). Conversations, remembered approvals and settings access are per user, and only
+> admins can change global settings, manage MCP servers, browse the server's disk or
+> create accounts. Keep the port on a trusted/private network anyway, or restrict the
+> two firewall rules to your subnet:
 > `Set-NetFirewallRule -DisplayGroup "RiSriGPT" -RemoteAddress 192.168.0.0/24`.
 > The model server also gains a DNS-rebinding host check once it listens beyond
 > loopback; if a client is refused, add its name via `allowed_hosts` in
@@ -100,11 +104,21 @@ cards, no chrome — message actions (copy / regenerate / edit / delete) only ap
 when you hover a reply.
 
 - **Everything per-chat lives in the composer's + menu**: attach photos and files,
-  the chat's working folder (**📂** to browse the server's disk), **🗂 Files** (file
-  manager), approval mode, file and shell on/off + access scope, MCP tools on/off,
-  and the persona picker with **＋** to write a new one.
-- **Header** keeps only what changes every now and then: the editable chat title and
-  the model dropdown.
+  the chat's working folder (**📂** to browse the server's disk — admins only), **🗂 Files**
+  (file manager), approval mode, file and shell on/off + access scope, MCP tools on/off,
+  and the persona picker with **＋** to write a new one. The folder badge under the box
+  shows the folder's name; hover it for the full path.
+- **Header** keeps only what changes every now and then: the editable chat title,
+  the model dropdown, and **⤓ Export** (Markdown download).
+- **Themes** — dark (default), light, or follow the OS. Switch it in the user menu
+  or with the command palette; the choice is stored in `localStorage` and applied
+  before first paint, so there is no flash.
+- **Command palette** — `Ctrl/Cmd+K` opens a searchable list of actions (new chat,
+  settings, personas, MCP, theme, compact, export, sign out) and every conversation.
+  `↑`/`↓` move, `Enter` runs, `Esc` closes.
+- **Continue** — the last assistant reply gets a *continue* action, which asks the
+  model to pick up exactly where it stopped without adding a visible user message
+  (useful after **Stop** or a `max_tokens` cut-off).
 - **Attachments** — pick files, drop them on the composer, or `Ctrl+V` an image (works
   for screenshots and images copied from apps, not just files copied in Explorer). They
   show as removable chips above the composer before you send (see *Attachments* below).
@@ -118,15 +132,33 @@ when you hover a reply.
 
 ### Attachments
 
-Anything you attach is uploaded when you press send:
+Anything you attach is processed when you press send:
 
 - The **first image** is also sent to the model as `image_url` (base64 data URL, or the
   URL itself if you used *Attach image by URL*), so vision-capable servers can see it.
-- **Every file** (images included) is saved into the conversation's working folder
-  through the same policy-checked endpoint the model's file tools use, and the message
-  the model receives ends with the absolute paths — so it can open them with
-  `files__read_file`, run them with `run_command`, and so on. A *Restricted to one
-  folder* conversation can only ever receive files inside its own folder.
+- **Non-image files** are saved into the conversation's working folder through the same
+  policy-checked endpoint the model's file tools use, and the message the model receives
+  ends with the absolute paths — so it can open them with `files__read_file`, run them
+  with `run_command`, and so on. A *Restricted to one folder* conversation can only ever
+  receive files inside its own folder.
+- **Images are not written to disk**; they are only sent to the model, so the chat folder
+  does not slowly fill with screenshots.
+
+### Accounts
+
+The first visit creates the administrator account (and claims any conversations that
+predate accounts). After that:
+
+- **Sign-ups are closed by default.** An admin can open them in
+  *Settings → Accounts → Allow new sign-ups*, or create accounts one by one from the user
+  menu → **Manage users** (with an admin/ordinary role switch).
+- Every account has its own conversations, remembered tool approvals and password.
+  Users can change their own password from the user menu.
+- Global settings, the MCP editor, the server folder browser and direct MCP test calls
+  are **admin only**; ordinary users get a read-only Settings dialog and can still use
+  all per-chat tools, their files and their own approvals.
+- Login and registration are rate limited (10 attempts per IP per 15 minutes), and
+  passwords must be at least 8 characters.
 
 ### AI server (OpenAI compatible)
 
@@ -197,8 +229,10 @@ them at any time, even mid-conversation — the next message picks it up.
 When a prompt appears you get **Allow**, **Allow for this chat**, **Always allow**
 and **Deny**. *Always allow* is remembered across restarts (clear it with
 **Forget remembered approvals**); *Allow for this chat* lasts until you close the app.
-Denying never breaks the turn — the model is told you declined and answers another way.
-Prompts stay pending if you switch conversation or reload the page, so you can still answer them.
+Grants are stored per account, so one user's *Always allow* never applies to another
+user's chats. Denying never breaks the turn — the model is told you declined and answers
+another way. Prompts stay pending if you switch conversation or reload the page, so you
+can still answer them, and they are only delivered to the account that made the call.
 
 **Access scope** (independent of approval, and per feature)
 
@@ -225,7 +259,9 @@ cannot try to use them. The **⏱ shell timeout** is the one setting that stays 
 **Choosing the working folder** — the **📂** button in the **+** menu opens a folder
 browser of *the machine the server runs on* (drives, parent folder, home shortcut), where
 you can create a new folder on the spot and apply it to this conversation. Useful when the
-app is open on a laptop but the folder lives on the desktop box.
+app is open on a laptop but the folder lives on the desktop box. Because it exposes the
+whole host disk, the browser is **admin only**; other users can still type a path into the
+folder field of the **+** menu (their own chat's tools remain confined by its access scope).
 
 ### Chat file manager
 
@@ -322,8 +358,15 @@ own tool policy: `workdir`, `approval_mode`, `file_access`, `shell_access`,
 | Method | Path | Purpose |
 | --- | --- | --- |
 | `GET` | `/api/health` | status + database path |
-| `GET`/`PUT` | `/api/settings` | read / update settings (API key is masked on read) |
-| `POST` | `/api/settings/test` | ping the configured server |
+| `GET` | `/api/auth/status` | session state, `needs_setup`, `open_registration` |
+| `POST` | `/api/auth/register` | create an account (the first account becomes admin) |
+| `POST` | `/api/auth/login` · `/api/auth/logout` | sign in / sign out |
+| `GET` | `/api/auth/me` · `POST /api/auth/change-password` | current user / change own password |
+| `GET`/`POST`/`PATCH`/`DELETE` | `/api/auth/users…` | admin user management (list/create/role/delete) |
+| `GET` | `/api/settings` | read settings (API key masked) |
+| `GET` | `/api/settings/health` | read-only ping of the configured server (any user) |
+| `PUT` | `/api/settings` | **admin:** update settings, incl. `allow_registration` |
+| `POST` | `/api/settings/test` | **admin:** ping the configured server |
 | `GET` | `/api/settings/models` | list models from the server |
 | `GET`/`POST` | `/api/prompts` | list / create personas |
 | `PUT`/`DELETE` | `/api/prompts/:id` | update / delete; `POST /:id/default` makes it default |
@@ -332,16 +375,21 @@ own tool policy: `workdir`, `approval_mode`, `file_access`, `shell_access`,
 | `POST` | `/api/conversations/:id/messages` | append a message |
 | `DELETE` | `/api/conversations/:id/messages/:messageId` | delete a message |
 | `POST` | `/api/conversations/:id/truncate-after` | drop messages from `message_id` onwards |
-| `POST` | `/api/chat` | **SSE stream**: `delta`, `reasoning`, `tool_call`, `tool_result`, `tool_denied`, `tool_unavailable`, `file_created`, `notice`, `stats`, `done`, `error` |
-| `GET` | `/api/fs/browse?path=` | browse the server's folders (folder picker); `POST /api/fs/mkdir` creates one |
+| `GET` | `/api/conversations/:id/export?format=md\|json` | download the transcript (ownership-checked) |
+| `POST` | `/api/chat` | start a turn (JSON ack; `409` if one is already running) |
+| `GET` | `/api/chat/stream?conversation_id=&last_event_id=` | **SSE stream**: `delta`, `reasoning`, `tool_generating`, `tool_call`, `tool_result`, `tool_denied`, `tool_cancelled`, `tool_unavailable`, `file_created`, `notice`, `stats`, `done`, `error`, `resync` |
+| `GET` | `/api/chat/running` | conversations generating right now |
+| `POST` | `/api/chat/stop` · `/api/chat/stop-tool` | stop the turn / cancel one tool call |
+| `POST` | `/api/chat/compact` | compact older turns into the summary now |
+| `GET` | `/api/fs/browse?path=` | **admin:** browse the server's folders; `POST /api/fs/mkdir` creates one |
 | `GET` | `/api/conversations/:id/fs?path=` | list this chat's folder · `/stat`, `/raw` (inline or `?download=1`), `POST /mkdir`, `/write`, `/upload`, `/rename`, `/delete` |
-| `GET` | `/api/mcp` | servers with live status and discovered tools |
-| `POST`/`PUT`/`DELETE` | `/api/mcp/:id` | manage servers; `POST /:id/connect`, `/:id/disconnect`, `/:id/call` |
+| `GET` | `/api/mcp` | servers with live status and discovered tools (secrets only for admins) |
+| `POST`/`PUT`/`DELETE` | `/api/mcp…` | **admin:** add/update/delete servers; `POST /:id/connect`, `/:id/disconnect`, `/:id/tools`, `/:id/call` |
 | `GET` | `/api/settings/tool-policy` | defaults a new conversation starts with |
-| `GET` | `/api/approvals` | tool calls waiting for a decision + remembered allowances |
-| `GET` | `/api/approvals/stream` | **SSE stream**: `approval_request`, `approval_resolved` |
+| `GET` | `/api/approvals` | this user's pending decisions + remembered allowances |
+| `GET` | `/api/approvals/stream` | **SSE stream**: this user's `approval_request`, `approval_resolved` |
 | `POST` | `/api/approvals/:id` | answer one: `{ "allowed": true, "scope": "once" \| "conversation" \| "always" }` |
-| `POST` | `/api/approvals/grants/clear` | forget remembered allowances |
+| `POST` | `/api/approvals/grants/clear` | forget this user's remembered allowances |
 
 `POST /api/chat` body:
 
@@ -351,6 +399,7 @@ own tool policy: `workdir`, `approval_mode`, `file_access`, `shell_access`,
   "content": "hello",
   "image_url": "https://…",
   "regenerate": false,
+  "continue": false,
   "use_tools": true,
   "extra_system": "answer in one sentence",
   "model": "optional override",
@@ -359,9 +408,13 @@ own tool policy: `workdir`, `approval_mode`, `file_access`, `shell_access`,
 }
 ```
 
-`GET /api/approvals/stream` emits `approval_request` when a tool call needs a decision
-and `approval_resolved` once it is answered or times out (10 minutes). Answer with
-`POST /api/approvals/:id`.
+`POST /api/chat` stores the user message and starts the turn; it returns `409` while
+another turn is still running for that conversation (open the stream to watch it).
+`GET /api/chat/stream` emits `delta` when the model produces text and `approval_request`
+when a tool call needs a decision; `resync` (`{reason, oldest}`) means the client was
+disconnected long enough that the event buffer was trimmed — reload the messages and
+reattach with `last_event_id=oldest-1`. Answer approvals with `POST /api/approvals/:id`;
+each request is only delivered to the account whose tool call is waiting.
 
 The six tool-policy fields accepted by `POST /api/conversations` and
 `PATCH /api/conversations/:id`:
@@ -378,16 +431,19 @@ The six tool-policy fields accepted by `POST /api/conversations` and
 `POST /api/mcp/:id/call` runs a tool outside a conversation; it uses the same defaults
 unless you pass a `"policy": { … }` object with the fields above.
 
-**Config lives in the database**: `api_url`, `api_key`, `model`, `temperature`,
-`max_tool_rounds`, `builtin_shell_timeout`, and `builtin_always_allowed`.
-Everything can be edited in **Settings**.
+**Config lives in the database**: `api_base_url`, `api_key`, `model`, `temperature`,
+`max_tool_rounds`, `builtin_shell_timeout`, `aitemp_root`, the context/compaction
+settings, `allow_registration` and `builtin_always_allowed` (per-user grants).
+Everything can be edited in **Settings** by an admin.
 
 ## Testing
 
 ```bash
-node server/index.js   # terminal 1
-npm test               # terminal 2 — runs both suites below
+npm test               # e2e + built-in tools + auth + context compaction
 ```
+
+The suites spawn their own servers and throwaway databases; no running app is needed.
+They take a few minutes in total.
 
 - **`npm run test:e2e`** (`test/e2e.mjs`) spawns a mock OpenAI server + demo MCP server and
   covers settings validation, model discovery, persona CRUD, MCP connection/tool
@@ -399,6 +455,12 @@ npm test               # terminal 2 — runs both suites below
   allow-for-chat, always-allow, per-server overrides, auto), full-access mode, background
   jobs, per-conversation policies (defaults, scope, tool-set switches, validation) and
   settings validation. It never touches `data/app.db`.
+- **`npm run test:auth`** (`test/auth.mjs`) runs with authentication enabled and covers
+  unauthenticated rejection, first-user setup + claiming orphan chats, closed-then-open
+  registration, per-user isolation, admin-only routes (settings, MCP, host disk browsing),
+  MCP secret scrubbing, login/logout and admin user management.
+- **`npm run test:context`** (`test/context-compress.mjs`) covers token estimation,
+  in-place trimming, tool-call/result pairing, and auto + manual compaction levels.
 
 ### Diagnosing your own server
 
@@ -417,37 +479,47 @@ tool definitions and emit `tool_calls` for tools that were never offered in the
 request. The app cannot execute those, so instead of discarding the reply it
 answers each such call with a "tool not available" result and lets the model
 continue. You will see a `⚠ <tool> is not an MCP tool here — skipped` chip in the
-transcript. Only tools from servers you added under **Settings → MCP servers** are executed.
+transcript. If the model keeps asking for unavailable tools, the turn stops after
+3 consecutive such rounds instead of looping forever. Only tools from servers you
+added under **Settings → MCP servers** are executed.
 
 ## Layout
 
 ```
 server/
-  index.js                express app, static UI, startup MCP connect
+  index.js                express app, static UI, startup MCP connect, route guards
   db.js                   SQLite schema, migrations, settings helpers
   sse.js                  Server-Sent Events helpers
+  services/auth.js        scrypt passwords, sessions, auth/admin middleware
   services/openai.js      OpenAI-compatible client + SSE parsing
   services/mcpManager.js  MCP client pool (stdio / HTTP / SSE / built-in)
   services/chatService.js message building + tool-calling loop + approval gate
-  services/approvals.js   pending tool-call approvals, grants, broadcast stream
+  services/context.js     token estimates, in-place trimming, compaction summaries
+  services/runManager.js  background runs + replay buffer for SSE reconnects
+  services/approvals.js   per-user pending approvals, grants, broadcast stream
   services/builtin/
     policy.js             per-conversation policy (AsyncLocalStorage), path containment
     factory.js            turn a tool array into an in-process MCP server
     filesServer.js        10 file tools
     shellServer.js        6 shell tools + background job registry
     index.js              built-in server registry
-  routes/                 settings, prompts, conversations, chat, mcp, approvals
+  routes/                 settings, prompts, conversations, chat, mcp, approvals, auth, files
 public/                   index.html, styles.css, app.js, markdown.js
-test/                     mock OpenAI server, demo MCP server, e2e + built-in suites
+test/                     mock servers + e2e, built-in, auth and context suites
 data/app.db               the central database (created on first run)
 ```
 
 ## Notes
 
-- The server binds to `127.0.0.1` by default and has **no authentication**. If you
-  set `HOST=0.0.0.0`, restrict access yourself.
-- The API key is stored in the database in plain text (local use) and never
-  returned by the API in full.
-- Tool results longer than 16 000 characters are truncated before being sent back
-  to the model; `max_tool_rounds` optionally caps how often a single turn may call
-  tools (blank = unlimited).
+- The server binds to `127.0.0.1` by default. Authentication is always enforced;
+  `AUTH_DISABLED=1` exists only for the test suites. If you set `HOST=0.0.0.0`,
+  keep the network trusted (or restrict the firewall rule to your subnet).
+- The API key is stored in the database in plain text (local use). The API only ever
+  returns a masked form (`api_key_masked`), including in `PUT /api/settings` responses.
+- Tool results longer than 8 000 characters are truncated before being sent back to
+  the model. `max_tool_rounds` optionally caps how often a single turn may call tools
+  (blank = unlimited, but a turn still stops after 3 rounds in a row of unavailable
+  tools). Upstream requests time out after 10 minutes even when a run's own abort
+  signal is present, so a hung model server cannot wedge a turn forever.
+- Stopping a reply keeps the text that was already streamed: the partial assistant
+  message is saved and marked `Stopped.` rather than disappearing on reload.

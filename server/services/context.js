@@ -3,7 +3,7 @@
  * by rolling older turns into a stored summary ("auto-compress").
  *
  * Why this exists: a chat re-sends its whole history every turn, and tool
- * results (up to 16k chars each) accumulate fast — long tool-using sessions
+ * results (up to 8k chars each) accumulate fast — long tool-using sessions
  * were reaching 200k+ prompt tokens, which costs minutes just to prefill. Once
  * the estimated prompt crosses the configured budget, the oldest turns that are
  * not already summarized are condensed into a running summary held on the
@@ -464,11 +464,12 @@ function currentPromptTokens(conversation, summarizedUpto) {
   const msgs = [];
   if (conversation.summary) msgs.push({ role: 'system', content: conversation.summary });
   const rows = db
-    .prepare('SELECT role, content, image_url, tool_calls, tool_call_id FROM messages WHERE conversation_id = ? AND id > ? ORDER BY id')
+    .prepare('SELECT role, content, image_url, tool_calls, tool_call_id, error FROM messages WHERE conversation_id = ? AND id > ? ORDER BY id')
     .all(conversation.id, summarizedUpto || 0);
   const liveIds = new Set();
   for (const r of rows) {
     if (r.role === 'system') continue;
+    if (r.error && !(r.content || '').trim() && !r.tool_calls) continue;
     if (r.role === 'tool') { if (r.tool_call_id && liveIds.has(r.tool_call_id)) msgs.push({ role: 'tool', content: r.content || '' }); continue; }
     const m = { role: r.role, content: r.content || '' };
     if (r.image_url) m.image_url = r.image_url;

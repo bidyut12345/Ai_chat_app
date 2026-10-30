@@ -3,6 +3,7 @@ import path from 'node:path';
 import { getAllSettings, getSetting, setSetting } from '../db.js';
 import { listModels, runtimeConfig, REASONING_EFFORTS } from '../services/openai.js';
 import { policySnapshot } from '../services/builtin/policy.js';
+import { requireAdmin } from '../services/auth.js';
 
 const router = Router();
 
@@ -18,20 +19,25 @@ const EDITABLE_KEYS = [
   'reasoning_effort',
   'context_window',
   'context_compress_at',
-  'context_keep'
+  'context_keep',
+  'allow_registration'
 ];
 
-// GET /api/settings
-router.get('/', (req, res) => {
-  const all = getAllSettings();
-  // Never leak the full API key to the UI.
+/** Never leak the full API key to the UI (or in a PUT echo). */
+function maskSettings(all) {
   const masked = { ...all };
+  delete masked.api_key_masked;
   if (masked.api_key) {
     const k = masked.api_key;
     masked.api_key_masked = k.length > 8 ? `${k.slice(0, 4)}…${k.slice(-4)}` : '••••';
     delete masked.api_key;
   }
-  res.json(masked);
+  return masked;
+}
+
+// GET /api/settings
+router.get('/', (req, res) => {
+  res.json(maskSettings(getAllSettings()));
 });
 
 // GET /api/settings/tool-policy -> defaults applied to a new chat. Each chat
@@ -43,8 +49,8 @@ router.get('/tool-policy', (req, res) => {
   });
 });
 
-// PUT /api/settings  { api_base_url, api_key, model, temperature, max_tokens, max_tool_rounds }
-router.put('/', (req, res) => {
+// PUT /api/settings  { api_base_url, api_key, model, temperature, max_tokens, max_tool_rounds, ... }  (admin)
+router.put('/', requireAdmin, (req, res) => {
   const body = req.body || {};
   const changed = [];
   for (const key of EDITABLE_KEYS) {
@@ -109,14 +115,51 @@ router.put('/', (req, res) => {
         value = '';
       }
     }
+    if (key === 'allow_registration') {
+      const v = value === true || value === 1 ? '1' : value === false || value === 0 ? '0' : String(value ?? '').trim();
+      if (v !== '0' && v !== '1') {
+        return res.status(400).json({ error: 'allow_registration must be 0 (closed) or 1 (open)' });
+      }
+      value = v;
+    }
     setSetting(key, value);
     changed.push(key);
   }
-  res.json({ ok: true, changed, settings: getAllSettings(), tool_policy: policySnapshot() });
+  res.json({ ok: true, changed, settings: maskSettings(getAllSettings()), tool_policy: policySnapshot() });
 });
 
-// POST /api/settings/test  -> ping the configured server (optionally with unsaved overrides)
-router.post('/test', async (req, res) => {
+/** Ping a model server and list its models. Never returns the API key. */
+async function pingServer(cfg) {
+  const r = await fetch(`${cfg.baseUrl}/models`, {
+    headers: cfg.apiKey ? { Authorization: `Bearer ${cfg.apiKey}` } : {},
+    signal: AbortSignal.timeout(15000)
+  });
+  const text = await r.text().catch(() => '');
+  let models = [];
+  try {
+    const j = JSON.parse(text);
+    models = (j.data || j.models || []).map((m) => m.id || m.name).filter(Boolean);
+  } catch {
+    /* not JSON, still a valid ping */
+  }
+  return { ok: r.ok, status: r.status, baseUrl: cfg.baseUrl, modelCount: models.length, models: models.slice(0, 50) };
+}
+
+// GET /api/settings/health -> sidebar "N models online" pill. Any signed-in
+// user may check the shared server (the chat cannot work without it), but this
+// only reads the stored config: unlike POST /test it accepts no overrides, so
+// it cannot be used to make the server probe arbitrary hosts.
+router.get('/health', async (req, res) => {
+  const cfg = runtimeConfig({});
+  try {
+    res.json(await pingServer(cfg));
+  } catch (e) {
+    res.json({ ok: false, baseUrl: cfg.baseUrl, error: e.message });
+  }
+});
+
+// POST /api/settings/test  -> ping the configured server (optionally with unsaved overrides)  (admin)
+router.post('/test', requireAdmin, async (req, res) => {
   const b = req.body || {};
   const cfg = runtimeConfig({
     baseUrl: b.api_base_url ?? b.baseUrl,
@@ -124,19 +167,7 @@ router.post('/test', async (req, res) => {
     model: b.model
   });
   try {
-    const r = await fetch(`${cfg.baseUrl}/models`, {
-      headers: cfg.apiKey ? { Authorization: `Bearer ${cfg.apiKey}` } : {},
-      signal: AbortSignal.timeout(15000)
-    });
-    const text = await r.text().catch(() => '');
-    let models = [];
-    try {
-      const j = JSON.parse(text);
-      models = (j.data || j.models || []).map((m) => m.id || m.name).filter(Boolean);
-    } catch {
-      /* not JSON, still a valid ping */
-    }
-    res.json({ ok: r.ok, status: r.status, baseUrl: cfg.baseUrl, modelCount: models.length, models: models.slice(0, 50) });
+    res.json(await pingServer(cfg));
   } catch (e) {
     res.status(200).json({ ok: false, baseUrl: cfg.baseUrl, error: e.message });
   }

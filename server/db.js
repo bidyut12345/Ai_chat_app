@@ -37,7 +37,8 @@ export const POLICY_DEFAULTS = {
   file_access: 'restricted',
   shell_access: 'restricted',
   files_enabled: 1,
-  shell_enabled: 1
+  shell_enabled: 1,
+  mcp_disabled: null
 };
 
 const SCHEMA = `
@@ -98,10 +99,32 @@ CREATE TABLE IF NOT EXISTS messages (
   tool_calls      TEXT,
   tool_call_id    TEXT,
   tokens          INTEGER,
+  error           TEXT,
   created_at      TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
 CREATE INDEX IF NOT EXISTS idx_messages_conversation ON messages(conversation_id, id);
+
+-- Every text file a turn's tools changed, keyed to the user message that
+-- started the turn. The before/after text is kept so the UI can show a diff and
+-- offer a per-file revert. Rows are capped in size by the tracker.
+CREATE TABLE IF NOT EXISTS file_changes (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  conversation_id INTEGER NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+  message_id      INTEGER NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+  path            TEXT NOT NULL,
+  rel_path        TEXT,
+  before_exists   INTEGER NOT NULL DEFAULT 0,
+  before_text     TEXT,
+  after_exists    INTEGER NOT NULL DEFAULT 0,
+  after_text      TEXT,
+  reverted_at     TEXT,
+  created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE(message_id, path)
+);
+
+CREATE INDEX IF NOT EXISTS idx_file_changes_message ON file_changes(message_id);
+CREATE INDEX IF NOT EXISTS idx_file_changes_conversation ON file_changes(conversation_id);
 
 CREATE TABLE IF NOT EXISTS mcp_servers (
   id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -146,6 +169,16 @@ export function initDb() {
   // Tool-result extras: how long the call took, and whether the user cancelled it.
   addMsgCol('tool_duration_ms INTEGER');
   addMsgCol('tool_cancelled INTEGER');
+  // Why a reply stopped early (upstream/model failure), kept on the message row
+  // so the reason survives a reload instead of living in a transient toast.
+  addMsgCol('error TEXT');
+
+  // file_changes is created by SCHEMA above; keep it forward-compatible with
+  // databases created before the revert marker existed.
+  const changeCols = db.prepare('PRAGMA table_info(file_changes)').all().map((c) => c.name);
+  if (changeCols.length && !changeCols.includes('reverted_at')) {
+    db.exec('ALTER TABLE file_changes ADD COLUMN reverted_at TEXT');
+  }
 
   const mcpCols = db.prepare('PRAGMA table_info(mcp_servers)').all().map((c) => c.name);
   if (!mcpCols.includes('builtin_key')) db.exec('ALTER TABLE mcp_servers ADD COLUMN builtin_key TEXT');
@@ -162,6 +195,8 @@ export function initDb() {
   addConvCol("shell_access TEXT NOT NULL DEFAULT 'restricted'");
   addConvCol('files_enabled INTEGER NOT NULL DEFAULT 1');
   addConvCol('shell_enabled INTEGER NOT NULL DEFAULT 1');
+  // JSON array of custom MCP server names this chat has switched off.
+  addConvCol('mcp_disabled TEXT');
   addConvCol("reasoning_effort TEXT NOT NULL DEFAULT 'auto'");
   // Rolling context summary (auto-compress): text + id of last summarized msg.
   addConvCol('summary TEXT');
@@ -196,6 +231,29 @@ export function initDb() {
   // hard cap, only used if set smaller than the window.
   setDefault.run('context_compress_at', '');
   setDefault.run('context_keep', '8000');
+  // New accounts are opt-in once the first admin exists. The first user is
+  // always allowed to sign up (setup); afterwards an admin enables this in
+  // Settings before anyone else can register.
+  setDefault.run('allow_registration', '0');
+
+  // Remembered tool approvals used to be a flat list of tool names shared by
+  // every account. Grants are now scoped per user (`${userId}::${tool}`), so
+  // migrate the legacy list to the first user (or drop it when there is none).
+  const legacyGrants = db.prepare("SELECT value FROM settings WHERE key = 'builtin_always_allowed'").get();
+  if (legacyGrants) {
+    try {
+      const arr = JSON.parse(legacyGrants.value || '[]');
+      if (Array.isArray(arr) && arr.some((g) => typeof g === 'string' && !g.includes('::'))) {
+        const first = db.prepare('SELECT id FROM users ORDER BY id LIMIT 1').get();
+        const migrated = first
+          ? arr.filter((g) => typeof g === 'string').map((g) => (g.includes('::') ? g : `${first.id}::${g}`))
+          : [];
+        db.prepare("UPDATE settings SET value = ? WHERE key = 'builtin_always_allowed'").run(JSON.stringify(migrated));
+      }
+    } catch {
+      db.prepare("UPDATE settings SET value = '[]' WHERE key = 'builtin_always_allowed'").run();
+    }
+  }
 
   // Seed default system prompts (first run only).
   const count = db.prepare('SELECT COUNT(*) AS c FROM system_prompts').get().c;

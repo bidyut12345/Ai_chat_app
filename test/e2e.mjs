@@ -261,6 +261,35 @@ try {
   check('regenerate did not add a user message', afterRegen.messages.filter((m) => m.role === 'user').length === userCountBefore);
   check('regenerate replaced the last reply', afterRegen.messages.length === beforeRegen.messages.length, `${beforeRegen.messages.length} -> ${afterRegen.messages.length}`);
 
+  console.log('\n== continue / export ==');
+  const beforeCont = await req('GET', `/api/conversations/${conv.id}`);
+  const contTurn = await readSseTurn({ conversation_id: conv.id, continue: true, use_tools: false });
+  const contDone = contTurn.find((e) => e.event === 'done');
+  check('continue produced a message', !!contDone?.data?.message);
+  const afterCont = await req('GET', `/api/conversations/${conv.id}`);
+  check(
+    'continue did not add a user message',
+    afterCont.messages.filter((m) => m.role === 'user').length === beforeCont.messages.filter((m) => m.role === 'user').length
+  );
+  check(
+    'continue appended one assistant reply',
+    afterCont.messages.length === beforeCont.messages.length + 1,
+    `${beforeCont.messages.length} -> ${afterCont.messages.length}`
+  );
+
+  const mdRes = await authFetch(`${APP}/api/conversations/${conv.id}/export?format=md`);
+  const mdText = await mdRes.text();
+  const mdDisposition = mdRes.headers.get('content-disposition') || '';
+  check('export md is a markdown attachment', /attachment/.test(mdDisposition) && /\.md"/.test(mdDisposition), mdDisposition);
+  check('export md content type', /text\/markdown/.test(mdRes.headers.get('content-type') || ''), mdRes.headers.get('content-type'));
+  check('export md starts with the chat title', mdText.startsWith(`# ${afterCont.title}`), mdText.slice(0, 80));
+  check('export md contains the transcript', mdText.includes('## You') && mdText.includes('## Assistant'));
+
+  const jsonRes = await authFetch(`${APP}/api/conversations/${conv.id}/export?format=json`);
+  const jsonExport = await jsonRes.json();
+  check('export json includes every message', Array.isArray(jsonExport.messages) && jsonExport.messages.length === afterCont.messages.length, String(jsonExport.messages?.length));
+  check('export json keeps roles', jsonExport.messages.every((m) => ['user', 'assistant', 'system', 'tool'].includes(m.role)));
+
   const firstUser = afterRegen.messages.find((m) => m.role === 'user');
   const trunc = await req('POST', `/api/conversations/${conv.id}/truncate-after`, { message_id: firstUser.id });
   check('truncate removed later messages', trunc.removed >= 1, `removed ${trunc.removed}`);

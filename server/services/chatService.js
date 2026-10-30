@@ -10,9 +10,14 @@ import { chatCompletion, consumeChatStream, mcpToolsToOpenAi, unavailableToolRes
 import { allTools, callTool } from './mcpManager.js';
 import { isPreApproved, requestApproval, denialResult } from './approvals.js';
 import { toolNeedsApproval, runWithConversation, resolvePath } from './builtin/policy.js';
+import { runWithFileChanges } from './fileChanges.js';
 import { maybeCompress, trimMessagesInPlace, generateTitle, pruneToolCallPayload } from './context.js';
 
 const MAX_TOOL_RESULT_CHARS = 8000;
+// A model that keeps asking for tools we do not have (llama.cpp wrappers inject
+// their own) would otherwise loop forever, since the default round cap is
+// unlimited. Stop after this many consecutive "unavailable tool" rounds.
+const MAX_UNAVAILABLE_ROUNDS = 3;
 
 /**
  * Text handed back to the model when the user cancels a running tool call.
@@ -30,7 +35,9 @@ const PRODUCING_TOOLS = {
   'files__edit_file': 'path',
   'files__create_directory': 'path',
   'files__copy_path': 'to',
-  'files__move_path': 'to'
+  'files__move_path': 'to',
+  'files__zip': 'path',
+  'files__share_workspace': 'path'
 };
 
 function clampText(s) {
@@ -38,12 +45,28 @@ function clampText(s) {
   return s.length > MAX_TOOL_RESULT_CHARS ? `${s.slice(0, MAX_TOOL_RESULT_CHARS)}\n…[truncated]` : s;
 }
 
+/** The path argument of a producing tool, with the archive defaults applied. */
+function producedPathArg(qualifiedName, args) {
+  const key = PRODUCING_TOOLS[qualifiedName];
+  if (!key) return null;
+  let raw = args?.[key];
+  // "Share the workspace" may omit its path and use the default archive name.
+  if (qualifiedName === 'files__share_workspace' && (typeof raw !== 'string' || !raw.trim())) {
+    raw = 'workspace.zip';
+  }
+  if (typeof raw !== 'string' || !raw.trim()) return null;
+  if ((qualifiedName === 'files__zip' || qualifiedName === 'files__share_workspace') && !/\.zip$/i.test(raw)) {
+    raw += '.zip';
+  }
+  return raw;
+}
+
 /** Describe a file a tool just wrote, so the browser can offer a download. */
 function describeProducedFile(qualifiedName, args) {
-  const key = PRODUCING_TOOLS[qualifiedName];
-  if (!key || typeof args?.[key] !== 'string') return null;
+  const rawPath = producedPathArg(qualifiedName, args);
+  if (!rawPath) return null;
   try {
-    const abs = resolvePath(args[key], { mustExist: true });
+    const abs = resolvePath(rawPath, { mustExist: true });
     const st = fs.statSync(abs);
     return {
       path: abs,
@@ -103,8 +126,8 @@ function tokPerSecond(total) {
 }
 
 let insertMsg;
-function msgInserter(db) {
-  if (!insertMsg) insertMsg = db.prepare('INSERT INTO messages (conversation_id, role, content, image_url, tool_calls, tool_call_id) VALUES (?, ?, ?, ?, ?, ?)');
+function msgInserter(database) {
+  if (!insertMsg) insertMsg = database.prepare('INSERT INTO messages (conversation_id, role, content, image_url, tool_calls, tool_call_id) VALUES (?, ?, ?, ?, ?, ?)');
   return insertMsg;
 }
 
@@ -162,7 +185,7 @@ function insertAssistant(conversationId, content, toolCalls, reasoning, segments
 
 let updateMsgExtras;
 /** Attach the per-reply extras (reasoning, ordered segments, files, stats) to a row. */
-function setExtras(id, { reasoning, segments, files, durationMs, promptTokens, completionTokens, pp, tg, tokenDetail } = {}) {
+function setExtras(id, { reasoning, segments, files, durationMs, promptTokens, completionTokens, pp, tg, tokenDetail, error } = {}) {
   if (!updateMsgExtras) {
     updateMsgExtras = db.prepare(
       `UPDATE messages
@@ -174,7 +197,8 @@ function setExtras(id, { reasoning, segments, files, durationMs, promptTokens, c
               completion_tokens = COALESCE(?, completion_tokens),
               pp_tok_s = COALESCE(?, pp_tok_s),
               tg_tok_s = COALESCE(?, tg_tok_s),
-              token_detail = COALESCE(?, token_detail)
+              token_detail = COALESCE(?, token_detail),
+              error = COALESCE(?, error)
         WHERE id = ?`
     );
   }
@@ -188,6 +212,7 @@ function setExtras(id, { reasoning, segments, files, durationMs, promptTokens, c
     pp ?? null,
     tg ?? null,
     tokenDetail ?? null,
+    error ?? null,
     id
   );
 }
@@ -244,13 +269,16 @@ export function buildMessages(conversationId, { systemPrompt, extraSystem, summa
   // instead of the verbatim history, so the prompt stays within budget.
   if (summary) msgs.push({ role: 'system', content: `[Summary of earlier conversation]\n${summary}` });
   const rows = db
-    .prepare('SELECT role, content, image_url, tool_calls, tool_call_id FROM messages WHERE conversation_id = ? AND id > ? ORDER BY id')
+    .prepare('SELECT role, content, image_url, tool_calls, tool_call_id, error FROM messages WHERE conversation_id = ? AND id > ? ORDER BY id')
     .all(conversationId, summarizedUpto || 0);
   // ids referenced by an assistant message we actually kept, so we never emit an
   // orphaned `tool` message (a tool result with no matching call breaks strict servers).
   const liveIds = new Set();
   for (const r of rows) {
     if (r.role === 'system') continue;
+    // A failed reply that produced no text carries only a UI error notice. It is
+    // not part of the conversation, so never replay it as an empty assistant turn.
+    if (r.error && !(r.content || '').trim() && !r.tool_calls) continue;
     if (r.role === 'tool') {
       if (r.tool_call_id && liveIds.has(r.tool_call_id)) {
         msgs.push({ role: 'tool', tool_call_id: r.tool_call_id, content: r.content || '' });
@@ -283,9 +311,15 @@ export function buildMessages(conversationId, { systemPrompt, extraSystem, summa
 /**
  * Run one chat turn with the conversation's own tool policy active, so the
  * built-in file and shell tools resolve paths, approvals and scopes per chat.
+ * The turn is also tied to the user message that started it, so every text file
+ * the tools change is recorded against that message for diff + revert.
  */
-export function runChatTurn({ emit, signal, toolControl, conversation, cfg, useTools, extraSystem, aiTitle }) {
-  return runWithConversation(conversation, () => runChatTurnInner({ emit, signal, toolControl, conversation, cfg, useTools, extraSystem, aiTitle }));
+export function runChatTurn({ emit, signal, toolControl, conversation, cfg, useTools, extraSystem, aiTitle, turnMessageId }) {
+  return runWithConversation(conversation, () =>
+    runWithFileChanges({ conversationId: conversation.id, messageId: turnMessageId }, () =>
+      runChatTurnInner({ emit, signal, toolControl, conversation, cfg, useTools, extraSystem, aiTitle })
+    )
+  );
 }
 
 async function runChatTurnInner({ emit, signal, toolControl, conversation, cfg, useTools, extraSystem, aiTitle }) {
@@ -321,6 +355,9 @@ async function runChatTurnInner({ emit, signal, toolControl, conversation, cfg, 
 
   let finalContent = '';
   let finalError = null;
+  // Set when the user pressed Stop: a deliberate stop is not a failure, so its
+  // "Stopped." notice is shown once but never written into the history.
+  let aborted = false;
 
   // Turn-wide counters: wall time, tokens and speeds reported by the server,
   // the chain of thought (kept, not discarded) and any file the tools wrote.
@@ -349,6 +386,7 @@ async function runChatTurnInner({ emit, signal, toolControl, conversation, cfg, 
   let roundText = '';
   let roundThink = '';
   let partialThink = '';
+  let unavailableRounds = 0;
 
   try {
   for (let round = 0; round < maxRounds; round++) {
@@ -357,7 +395,7 @@ async function runChatTurnInner({ emit, signal, toolControl, conversation, cfg, 
     roundText = '';
     roundThink = '';
     // Within a single tool-heavy turn the live `messages` array keeps growing
-    // (each round appends tool calls + up to 16k-char results). Trim bulky older
+    // (each round appends tool calls + up to 8k-char results). Trim bulky older
     // tool results so we never re-send the whole turn's tool traffic — while
     // preserving every call/result pairing (only older result bodies elide).
     trimMessagesInPlace(messages, cfg.contextKeep);
@@ -386,7 +424,26 @@ async function runChatTurnInner({ emit, signal, toolControl, conversation, cfg, 
         reasoningAll += chunk;
         addSeg({ t: 'r' });
         emit('reasoning', { text: chunk });
-      }
+      },
+      // Tool-call arguments (e.g. a big write-file body) stream token by token
+      // and can take a long time before execution starts. Emit a throttled
+      // 'tool_generating' event so the UI shows the chip with live progress.
+      (() => {
+        const byId = new Map();
+        let lastEmitAt = 0;
+        return ({ id, name, argsDelta }) => {
+          const cur = byId.get(id) || { name, chars: 0 };
+          if (name) cur.name = name;
+          cur.chars += argsDelta.length;
+          byId.set(id, cur);
+          const now = Date.now();
+          // Emit immediately for a new call, then at most ~3x per second.
+          if (argsDelta.length && now - lastEmitAt < 350 && byId.size && cur.emitted) return;
+          lastEmitAt = now;
+          cur.emitted = true;
+          emit('tool_generating', { id, name: cur.name, args_chars: cur.chars });
+        };
+      })()
     );
     roundThink = '';
     roundText = '';
@@ -446,12 +503,15 @@ async function runChatTurnInner({ emit, signal, toolControl, conversation, cfg, 
         messages.push({ role: 'tool', tool_call_id: tc.id, content: resultText });
         emit('tool_unavailable', { id: tc.id, name: tc.function.name });
       }
-      if (round === maxRounds - 1) {
+      unavailableRounds += 1;
+      if (unavailableRounds >= MAX_UNAVAILABLE_ROUNDS || round === maxRounds - 1) {
         finalContent = assistant.content || '';
         finalError = `The model kept requesting unavailable tools (${unknown.map((t) => t.function.name).join(', ')}).`;
+        break;
       }
       continue;
     }
+    unavailableRounds = 0;
 
     // Persist the assistant tool-call message, then execute each call.
     const toolCallRow = insertAssistant(conversation.id, assistant.content || '', JSON.stringify(assistant.tool_calls), roundReasoning, JSON.stringify(roundSegs), null);
@@ -486,9 +546,10 @@ async function runChatTurnInner({ emit, signal, toolControl, conversation, cfg, 
         else {
           // Policy gate: mutating tools pause here until the user answers.
           const tool = toolIndex.get(name);
-          if (toolNeedsApproval(tool) && !isPreApproved(conversation.id, name)) {
+          if (toolNeedsApproval(tool) && !isPreApproved(conversation.user_id, conversation.id, name)) {
             const answer = await requestApproval({
               send: (event, data) => emit(event, data),
+              userId: conversation.user_id,
               conversationId: conversation.id,
               qualifiedName: name,
               args,
@@ -565,9 +626,12 @@ async function runChatTurnInner({ emit, signal, toolControl, conversation, cfg, 
     // partial reply survives a reload, and mark it stopped.
     if (roundThink) addSeg({ t: 'r' });
     if (roundText) addSeg({ t: 't' });
-    const aborted = err && (err.name === 'AbortError' || abortSignal.aborted);
+    aborted = !!(err && (err.name === 'AbortError' || abortSignal.aborted));
     finalError = aborted ? 'Stopped.' : `Generation failed: ${err && err.message ? err.message : err}`;
     if (!aborted) console.error('[chat] generation failed:', err);
+    // Keep the text that was already streamed: the browser showed it, so a
+    // Stop (or an upstream failure) mid-answer must not make it vanish.
+    finalContent = roundText || '';
     partialThink = roundThink;
   }
 
@@ -580,9 +644,12 @@ async function runChatTurnInner({ emit, signal, toolControl, conversation, cfg, 
   // on its last round (each round re-sends the whole history, so the last round
   // is the fullest). This is what the context meter shows.
   const contextTokens = stats.rounds.reduce((m, r) => Math.max(m, r.prompt), 0);
-  // Don't store a completely empty assistant row when nothing was produced.
+  // Don't store a completely empty assistant row when nothing was produced —
+  // unless the turn failed, where the reason itself is the only output and
+  // must survive a reload. User stops are not persisted.
+  const keepError = !!(finalError && !aborted);
   let saved = null;
-  if (finalContent || segsJson || filesJson) {
+  if (finalContent || segsJson || filesJson || keepError) {
     const info = msgInserter(db).run(conversation.id, 'assistant', finalContent, null, null, null);
     setExtras(info.lastInsertRowid, {
       reasoning: partialThink || lastRoundReasoning || null,
@@ -593,7 +660,8 @@ async function runChatTurnInner({ emit, signal, toolControl, conversation, cfg, 
       completionTokens: stats.completionTokens || null,
       pp: pp == null ? null : Math.round(pp * 10) / 10,
       tg: tg == null ? null : Math.round(tg * 10) / 10,
-      tokenDetail: detailJson
+      tokenDetail: detailJson,
+      error: keepError ? finalError : null
     });
     saved = db.prepare('SELECT * FROM messages WHERE id = ?').get(info.lastInsertRowid);
   }
