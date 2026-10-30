@@ -54,8 +54,36 @@
     return '#';
   }
 
+  const FILE_EXT_RE = /\.(zip|tar|gz|tgz|7z|rar|txt|md|markdown|json|csv|tsv|pdf|docx?|xlsx?|pptx?|html?|css|js|ts|py|rs|go|c|cpp|h|java|png|jpe?g|gif|webp|svg)$/i;
+
+  function isLocalFilePath(t) {
+    if (!t) return false;
+    if (/^(https?:|mailto:|#|\/|data:)/i.test(t)) return false;
+    if (/^[A-Za-z]:[\\/]/.test(t) || t.startsWith('./') || t.startsWith('.\\') || t.startsWith('../') || t.startsWith('..\\')) return true;
+    if (FILE_EXT_RE.test(t)) {
+      if (t.includes('/') || t.includes('\\')) {
+        const first = t.split(/[\\/]/)[0];
+        if (first === '' || first === '.' || first === '..') return true;
+        if (/^[A-Za-z0-9_-]+(\.[A-Za-z0-9_-]+)+$/.test(first)) return false;
+        return true;
+      }
+      return true;
+    }
+    return false;
+  }
+
   function safeUrl(u) {
     const t = String(u || '').trim();
+    if (isLocalFilePath(t)) {
+      const api = global.conversationFileUrl;
+      if (typeof api === 'function') {
+        try {
+          return api(t, true) || '#';
+        } catch {
+          return '#';
+        }
+      }
+    }
     if (/^(https?:|mailto:|#|\/)/i.test(t)) return t;
     if (/^[\w.-]+\.[a-z]{2,}(\/|$)/i.test(t)) return `https://${t}`;
     return '#';
@@ -75,8 +103,10 @@
       return u === '#' ? escapeHtml(alt) : `<img src="${u}" alt="${alt}" loading="lazy">`;
     });
     s = s.replace(/\[([^\]]+)\]\(([^)\s]+)(?:\s+"[^"]*")?\)/g, (_, text, url) => {
-      const u = safeUrl(url.replace(/&amp;/g, '&'));
-      return `<a href="${u}" target="_blank" rel="noreferrer">${text}</a>`;
+      const rawUrl = url.replace(/&amp;/g, '&');
+      const isLocal = isLocalFilePath(rawUrl.trim());
+      const u = safeUrl(rawUrl);
+      return `<a href="${u}"${isLocal ? ' download' : ' target="_blank" rel="noreferrer"'}>${text}</a>`;
     });
     s = s.replace(/(^|[\s(])((?:https?:\/\/|www\.)[^\s<>"']+)/g, (_, p, url) => `${p}<a href="${safeUrl(url)}" target="_blank" rel="noreferrer">${url}</a>`);
     s = s.replace(/\*\*\*([^*]+)\*\*\*/g, '<strong><em>$1</em></strong>');

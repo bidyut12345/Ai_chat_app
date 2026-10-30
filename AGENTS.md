@@ -294,7 +294,33 @@ survives a refresh. e2e all checks passed, builtin 56, auth 38, context 34.
 > And if asked to assistant to share the workspace, then it will compress and
 > allow the zip file to be downloadable."
 
-Status: **in progress**.
+Status: **done**.
+- **Message actions**: Regenerate and delete buttons are strictly restricted to user messages (`m.role === 'user'`). Assistant messages only show Copy and Continue/Resume.
+- **Per-message file tracking & comparison/revert**:
+  - Added `file_changes` table in SQLite recording `conversation_id`, `message_id`, `path`, `rel_path`, `before_exists`, `before_text`, `after_exists`, `after_text`, and `reverted_at`.
+  - `fileChanges.js` tracks file states using `AsyncLocalStorage` across tool calls during the turn.
+  - User messages render an expandable `file-changes` section listing each modified file with line diff stats (`+N −M`), a **Compare** button opening a line-by-line diff modal (`#dlg-diff`), and a **Revert** button (with two-step confirmation) calling `POST /api/conversations/:id/fs/changes/:changeId/revert` to restore or remove the file.
+- **Chat Workspace File Explorer**:
+  - Added a direct **Files** button (`#btn-header-files`) in `#chat-header` alongside AI and Export, and kept the item in the `+` popup.
+  - Modal explorer (`#dlg-files`) allows browsing the chat's workspace folder, navigating directories, creating folders, uploading files, renaming, deleting, and downloading.
+  - Built-in previewer supports code/text files, images (inline display), and switchable Preview vs Code tabs for Markdown (rendered via `renderMarkdown`) and HTML (rendered in a sandboxed iframe).
+- **Built-in ZIP and Unzip tools**:
+  - `files__zip`: Compresses specified files or directories into a `.zip` archive (skipping `node_modules`, `.git`, etc.).
+  - `files__unzip`: Safely extracts archives into target directories with path traversal protection.
+  - Zero external dependencies: implemented in `server/services/builtin/zip.js` using standard `node:zlib`.
+- **Share Workspace & Downloadable ZIP**:
+  - `files__share_workspace`: Built-in tool compressing the entire workspace into `workspace.zip`.
+  - Produces a downloadable file chip in the assistant turn with a direct download button.
+  - `markdown.js` auto-routes markdown links pointing to workspace files (such as `[workspace.zip](workspace.zip)`) via `window.conversationFileUrl(..., true)` so clicking directly downloads the file.
+
+Verified:
+- `node --check` clean on all JS/MJS files.
+- `test/builtin-tools.mjs`: 59 passed, 0 failed (testing all 14 files tools including zip, unzip, and share_workspace).
+- `test/auth.mjs`: 38 passed, 0 failed.
+- `test/context-compress.mjs`: 34 passed, 0 failed.
+- `test/automation.mjs`: 50 passed, 0 failed, 1 skipped.
+- `test/e2e.mjs`: All checks passed.
+- Headless browser screenshot verified UI layout and buttons.
 
 ### Earlier requests (from the session summary; exact wording not retained)
 

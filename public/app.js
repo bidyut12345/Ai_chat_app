@@ -646,6 +646,8 @@ function renderMessages() {
   autoFollow = true;
   const exportBtn = $('#btn-export-chat');
   if (exportBtn) exportBtn.disabled = !state.currentId;
+  const filesBtn = $('#btn-header-files');
+  if (filesBtn) filesBtn.disabled = !state.currentId;
   if (!state.currentId) {
     box.append($('#empty-state') || buildEmptyState());
     $('#empty-state').classList.remove('hidden');
@@ -1489,9 +1491,9 @@ function fileUrl(p, download = true) {
   return `/api/conversations/${state.currentId}/fs/raw?${q}`;
 }
 
-// Used by markdown.js to turn a local image path in model output into a URL the
-// browser can load. Served inline (no download=1) so it renders in an <img>.
-window.conversationFileUrl = (p) => fileUrl(p, false);
+// Used by markdown.js to turn local paths in model output into URLs the
+// browser can load (inline for images, download=1 for links).
+window.conversationFileUrl = (p, download = false) => fileUrl(p, download);
 
 async function browseFiles(p) {
   if (!state.currentId) return;
@@ -3468,6 +3470,7 @@ function wire() {
   $('#btn-toggle-sidebar').onclick = () => toggleSidebar();
   $('#sidebar-backdrop').onclick = () => toggleSidebar(false);
   $('#btn-export-chat').onclick = () => exportConversation('md');
+  $('#btn-header-files').onclick = () => openFileManager();
   $('#btn-theme').onclick = () => { hideUserMenu(); cycleTheme(); };
 
   // Command palette: filter as you type, arrows move, Enter runs, Esc closes.

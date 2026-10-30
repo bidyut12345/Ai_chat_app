@@ -296,12 +296,13 @@ if (-not $found) { $found = $fallback; $matched = $false }
 } | ConvertTo-Json -Compress`,
         { env: { RI_TARGET: target, RI_ARGS: str(args.arguments), RI_CWD: cwd }, json: true, timeout: 30000 }
       );
+      const procName = res.process || res.target || 'app';
       if (res.handle) {
         const owner = res.matched ? '' : ' (its window belongs to another process, e.g. a console host)';
-        return `Started ${res.process} (pid ${res.pid}) for ${res.target}\nWindow: "${res.title}"  handle ${res.handle}${owner}`;
+        return `Started ${procName} (pid ${res.pid}) for ${res.target}\nWindow: "${res.title}"  handle ${res.handle}${owner}`;
       }
       if (res.pid && !res.exited) {
-        return `Started ${res.process} (pid ${res.pid}) for ${res.target}. It has no window yet — use list_windows to find it.`;
+        return `Started ${procName} (pid ${res.pid}) for ${res.target}. It has no window yet — use list_windows to find it.`;
       }
       return `Opened ${res.target} with its default handler (no new window of its own — use list_windows).`;
     }
