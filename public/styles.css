@@ -70,6 +70,21 @@
   --scroll-code-hover: #777;
   --col: 760px;
   --safe-bottom: env(safe-area-inset-bottom, 0px);
+  --syn-keyword: #ff7b72;
+  --syn-string: #a5d6ff;
+  --syn-comment: #8b949e;
+  --syn-number: #79c0ff;
+  --syn-fn: #d2a8ff;
+  --syn-type: #ffa657;
+  --syn-tag: #7ee787;
+  --syn-attr: #79c0ff;
+  --syn-prop: #79c0ff;
+  --syn-var: #ffa657;
+  --syn-bool: #ff7b72;
+  --syn-op: #ff7b72;
+  --syn-punct: #c9d1d9;
+  --syn-entity: #7ee787;
+  --syn-doctype: #8b949e;
 }
 
 html[data-theme="light"] {
@@ -137,6 +152,21 @@ html[data-theme="light"] {
   --scroll-thumb-active: #8e8e99;
   --scroll-code: #b8b8c2;
   --scroll-code-hover: #9a9aa5;
+  --syn-keyword: #cf222e;
+  --syn-string: #0a3069;
+  --syn-comment: #6e7781;
+  --syn-number: #0550ae;
+  --syn-fn: #8250df;
+  --syn-type: #953800;
+  --syn-tag: #116329;
+  --syn-attr: #0550ae;
+  --syn-prop: #0550ae;
+  --syn-var: #953800;
+  --syn-bool: #cf222e;
+  --syn-op: #cf222e;
+  --syn-punct: #24292f;
+  --syn-entity: #116329;
+  --syn-doctype: #6e7781;
 }
 
 * {
@@ -953,7 +983,7 @@ select:focus-visible,
 .messages {
   flex: 1;
   overflow-y: auto;
-  padding: 14px 16px 22px;
+  padding: 10px 14px 18px;
 }
 
 /* ─────────── Pill scroll rail (message minimap) ─────────── */
@@ -1310,12 +1340,12 @@ select:focus-visible,
 
 .msg {
   display: flex;
-  gap: 12px;
+  gap: 10px;
   margin: 0;
 }
 
 .msg + .msg {
-  margin-top: 20px;
+  margin-top: 12px;
 }
 
 .msg-avatar {
@@ -1342,8 +1372,8 @@ select:focus-visible,
 
 .msg.user .bubble {
   background: var(--surface-2);
-  border-radius: 18px;
-  padding: 10px 16px;
+  border-radius: 14px;
+  padding: 6px 13px;
   word-break: break-word;
 }
 
@@ -1361,11 +1391,11 @@ select:focus-visible,
 .msg-head {
   display: flex;
   align-items: center;
-  gap: 8px;
-  min-height: 22px;
-  font-size: 11.5px;
+  gap: 6px;
+  min-height: 18px;
+  font-size: 11px;
   color: var(--dimmer);
-  margin-bottom: 5px;
+  margin-bottom: 2px;
   opacity: 0;
   transition: opacity .12s;
 }
@@ -1404,8 +1434,8 @@ select:focus-visible,
   border: 0;
   color: var(--dimmer);
   cursor: pointer;
-  font-size: 11.5px;
-  padding: 2px 8px;
+  font-size: 11px;
+  padding: 1px 6px;
   border-radius: 999px;
   transition: background .12s ease, color .12s ease;
 }
@@ -1425,7 +1455,7 @@ select:focus-visible,
 
 .content {
   word-break: break-word;
-  line-height: 1.7;
+  line-height: 1.55;
 }
 
 .content>*:first-child {
@@ -1437,75 +1467,75 @@ select:focus-visible,
 }
 
 .content p {
-  margin: 0 0 14px;
+  margin: 0 0 8px;
 }
 
 .content h1,
 .content h2,
 .content h3,
 .content h4 {
-  margin: 22px 0 10px;
+  margin: 14px 0 6px;
   line-height: 1.3;
   font-weight: 650;
   letter-spacing: -.15px;
 }
 
 .content h1 {
-  font-size: 21px;
+  font-size: 19px;
 }
 
 .content h2 {
-  font-size: 18.5px;
+  font-size: 17px;
 }
 
 .content h3 {
-  font-size: 16.5px;
+  font-size: 15px;
 }
 
 .content h4 {
-  font-size: 15px;
+  font-size: 14px;
 }
 
 .content ul,
 .content ol {
-  margin: 0 0 14px;
-  padding-left: 23px;
+  margin: 0 0 8px;
+  padding-left: 20px;
 }
 
 .content li {
-  margin: 5px 0;
+  margin: 2px 0;
 }
 
 .content li>p {
-  margin-bottom: 6px;
+  margin-bottom: 4px;
 }
 
 .content hr {
   border: 0;
   border-top: 1px solid var(--border);
-  margin: 20px 0;
+  margin: 14px 0;
 }
 
 .content blockquote {
-  margin: 0 0 14px;
-  padding: 2px 0 2px 15px;
+  margin: 0 0 8px;
+  padding: 2px 0 2px 12px;
   border-left: 3px solid var(--border-strong);
   color: var(--dim);
 }
 
 .content table {
   border-collapse: collapse;
-  margin: 0 0 14px;
+  margin: 0 0 8px;
   display: block;
   overflow-x: auto;
   max-width: 100%;
-  font-size: 13.5px;
+  font-size: 12.5px;
 }
 
 .content th,
 .content td {
   border: 1px solid var(--border);
-  padding: 7px 12px;
+  padding: 5px 9px;
   text-align: left;
 }
 
@@ -1527,21 +1557,21 @@ select:focus-visible,
   position: relative;
   background: var(--bg-code);
   border: 1px solid var(--border-soft);
-  border-radius: 12px;
-  margin: 0 0 14px;
+  border-radius: 8px;
+  margin: 0 0 8px;
   overflow: hidden;
 }
 
 .code-block pre {
   margin: 0;
-  padding: 14px 16px;
+  padding: 10px 12px;
   overflow-x: auto;
 }
 
 .code-block code {
   font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
-  font-size: 12.8px;
-  line-height: 1.6;
+  font-size: 12.2px;
+  line-height: 1.5;
 }
 
 .code-copy {
@@ -1569,14 +1599,14 @@ select:focus-visible,
 
 /* Thinking, tool chips, stats, produced files */
 .thinking {
-  margin: 0 0 10px;
-  font-size: 13px;
+  margin: 0 0 6px;
+  font-size: 12px;
   color: var(--dim);
 }
 
 .thinking summary {
   cursor: pointer;
-  padding: 3px 0;
+  padding: 2px 0;
   list-style: none;
 }
 
@@ -1590,24 +1620,38 @@ select:focus-visible,
 
 .thinking-body {
   border-left: 2px solid var(--border);
-  margin: 6px 0 6px 4px;
-  padding: 2px 0 2px 13px;
+  margin: 4px 0 4px 3px;
+  padding: 2px 0 2px 10px;
   color: var(--dim);
-  max-height: 340px;
+  max-height: 280px;
   overflow: auto;
+  font-size: 12px;
+  line-height: 1.5;
 }
 
-/* Compact tool chip: a single link-style line that expands to reveal the
-   arguments and the (merged) result. No separate result chip. */
+/* Compact tool chip: a slim pill that expands to reveal arguments and result. */
 .tool-chip {
-  /* border: 1px solid var(--border);
-  border-radius: 9px; */
-  padding: 0;
-  /* margin: 2px 0; */
-  font-size: 12.5px;
-  /* background: #232323; */
+  display: block;
+  width: fit-content;
   max-width: 100%;
+  margin: 3px 0;
+  padding: 0;
+  font-size: 11.5px;
+  border: 1px solid var(--border-soft);
+  border-radius: 6px;
+  background: var(--surface-1);
   overflow: hidden;
+  transition: border-color .15s ease, background .15s ease;
+}
+
+.tool-chip:hover {
+  border-color: var(--border);
+}
+
+.tool-chip[open] {
+  width: 100%;
+  border-color: var(--border);
+  background: var(--surface-1);
 }
 
 .tool-chip>summary {
@@ -1616,10 +1660,11 @@ select:focus-visible,
   list-style: none;
   display: flex;
   align-items: center;
-  gap: 7px;
-  padding: 5px 10px;
+  gap: 6px;
+  padding: 3px 8px;
   user-select: none;
-  line-height: 1.4;
+  line-height: 1.35;
+  min-height: 24px;
 }
 
 .tool-chip>summary::-webkit-details-marker {
@@ -1628,7 +1673,7 @@ select:focus-visible,
 
 .tool-chip>summary::before {
   content: "▸";
-  font-size: 10px;
+  font-size: 8.5px;
   color: var(--dimmer);
   flex: none;
   transition: transform .12s ease;
@@ -1644,11 +1689,15 @@ select:focus-visible,
 
 .tool-chip .tool-ico {
   flex: none;
+  font-size: 11.5px;
+  line-height: 1;
 }
 
 .tool-chip .tool-name {
   font-family: ui-monospace, "Cascadia Code", "Consolas", monospace;
   color: var(--text);
+  font-size: 11px;
+  font-weight: 500;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1656,13 +1705,13 @@ select:focus-visible,
 
 .tool-chip .tool-status {
   color: var(--dimmer);
-  font-size: 11.5px;
+  font-size: 10.5px;
   white-space: nowrap;
 }
 
 .tool-chip .tool-status::before {
   content: "·";
-  margin-right: 6px;
+  margin-right: 5px;
   color: var(--dimmer);
 }
 
@@ -1712,12 +1761,14 @@ select:focus-visible,
 .tool-chip .tool-cancel {
   margin-left: auto;
   flex: none;
-  font-size: 11px;
+  font-size: 10px;
   color: var(--dim);
   background: transparent;
   border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 1px 8px;
+  border-radius: 4px;
+  padding: 0 5px;
+  height: 18px;
+  line-height: 16px;
   cursor: pointer;
 }
 
@@ -1733,23 +1784,24 @@ select:focus-visible,
 }
 
 .tool-chip .tool-args {
-  border-top: 1px solid var(--border);
+  border-top: 1px solid var(--border-soft);
 }
 
 .tool-chip pre {
   margin: 0;
-  padding: 9px 11px;
+  padding: 6px 9px;
   background: var(--bg-code);
   border-radius: 0;
-  max-height: 260px;
+  max-height: 200px;
   overflow: auto;
-  font-size: 12px;
+  font-size: 11px;
+  line-height: 1.4;
   white-space: pre-wrap;
   word-break: break-word;
 }
 
 .tool-chip .tool-out pre {
-  border-top: 1px solid var(--border);
+  border-top: 1px solid var(--border-soft);
 }
 
 .tool-chip.is-running>summary {
@@ -1758,9 +1810,9 @@ select:focus-visible,
 
 
 .msg-stats {
-  font-size: 11.5px;
+  font-size: 11px;
   color: var(--dimmer);
-  margin-top: 8px;
+  margin-top: 5px;
 }
 
 .msg-stats.live {
@@ -1961,24 +2013,24 @@ select:focus-visible,
 .file-chips {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
-  margin-top: 10px;
+  gap: 6px;
+  margin-top: 6px;
 }
 
 .file-chip {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
   border: 1px solid var(--border);
-  border-radius: 12px;
-  padding: 6px 11px;
-  font-size: 12.5px;
+  border-radius: 8px;
+  padding: 4px 9px;
+  font-size: 12px;
   background: var(--surface-2);
   max-width: 100%;
 }
 
 .file-chip-name {
-  max-width: 210px;
+  max-width: 200px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1986,16 +2038,16 @@ select:focus-visible,
 
 .file-chip-size {
   color: var(--dimmer);
-  font-size: 11.5px;
+  font-size: 11px;
 }
 
 .file-chip-dl {
   text-decoration: none;
   color: var(--text);
   border: 1px solid var(--border);
-  border-radius: 7px;
-  padding: 1px 8px;
-  font-size: 11.5px;
+  border-radius: 5px;
+  padding: 1px 6px;
+  font-size: 11px;
 }
 
 .file-chip-dl:hover {
@@ -3212,6 +3264,243 @@ select:focus-visible,
   border-radius: 6px;
 }
 
+/* Fullscreen files dialog (chat workspace file manager) — Compact UI */
+#dlg-files {
+  position: fixed;
+  inset: 0;
+  width: 100vw;
+  max-width: 100vw;
+  height: 100dvh;
+  max-height: 100dvh;
+  margin: 0;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+#dlg-files form,
+#dlg-files #files-form {
+  width: 100%;
+  height: 100dvh;
+  max-height: 100dvh;
+  display: flex;
+  flex-direction: column;
+}
+
+#dlg-files .modal-head {
+  flex: none;
+  padding: 8px 16px;
+  background: var(--bg-elev);
+  border-bottom: 1px solid var(--border-soft);
+  min-height: 40px;
+}
+
+#dlg-files .modal-head h2 {
+  font-size: 14.5px;
+  font-weight: 600;
+  margin: 0;
+}
+
+#dlg-files .modal-head .icon-btn {
+  width: 28px;
+  height: 28px;
+  padding: 0;
+}
+
+#dlg-files .modal-body {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  padding: 8px 14px calc(8px + var(--safe-bottom));
+  gap: 6px;
+}
+
+#dlg-files .modal-body > .row {
+  flex: none;
+  margin: 0;
+  gap: 6px;
+}
+
+#dlg-files input[type="text"] {
+  padding: 4px 8px;
+  height: 28px;
+  font-size: 12px;
+  border-radius: 6px;
+}
+
+#dlg-files #files-path {
+  font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
+  font-size: 11.5px;
+}
+
+#dlg-files .btn {
+  padding: 3px 8px;
+  height: 28px;
+  font-size: 12px;
+  border-radius: 6px;
+  line-height: 1;
+}
+
+#dlg-files .btn.icon-btn {
+  width: 28px;
+  min-width: 28px;
+  padding: 0;
+}
+
+#dlg-files #files-count {
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+#dlg-files .file-list {
+  flex: 1;
+  min-height: 0;
+  max-height: none;
+  margin-bottom: 0;
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+  border-radius: 8px;
+}
+
+#dlg-files .file-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 3px 10px;
+  min-height: 28px;
+  font-size: 12.5px;
+  border-bottom: 1px solid var(--border-faint);
+}
+
+#dlg-files .file-row:last-child {
+  border-bottom: 0;
+}
+
+#dlg-files .file-row:hover {
+  background: var(--bg-elev);
+}
+
+#dlg-files .file-ico {
+  font-size: 13px;
+  width: 16px;
+  text-align: center;
+  flex-shrink: 0;
+}
+
+#dlg-files .file-name {
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+#dlg-files .file-meta {
+  font-size: 11px;
+  color: var(--dimmer);
+}
+
+#dlg-files .file-acts {
+  display: inline-flex;
+  gap: 3px;
+  align-items: center;
+}
+
+#dlg-files .file-acts .btn {
+  height: 22px;
+  width: 22px;
+  min-width: 22px;
+  padding: 0;
+  font-size: 11px;
+  border-radius: 4px;
+}
+
+#dlg-files .file-preview {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  padding: 6px 10px;
+}
+
+#dlg-files .file-preview-head {
+  flex: none;
+  margin: 0 0 6px 0;
+  gap: 6px;
+  min-height: 28px;
+}
+
+#dlg-files .file-preview-head strong {
+  font-size: 13px;
+}
+
+#dlg-files .file-preview-head .muted {
+  font-size: 11px;
+}
+
+#dlg-files .file-view-tabs {
+  display: inline-flex;
+  gap: 3px;
+}
+
+#dlg-files .file-view-tabs .btn {
+  height: 24px;
+  padding: 2px 7px;
+  font-size: 11px;
+  border-radius: 5px;
+}
+
+#dlg-files .file-preview-content {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+#dlg-files .file-preview-body {
+  flex: 1;
+  min-height: 0;
+  max-height: none;
+  overflow: auto;
+  font-size: 12px;
+  line-height: 1.5;
+  padding: 6px 10px;
+  border-radius: 6px;
+}
+
+#dlg-files .md-preview {
+  flex: 1;
+  min-height: 0;
+  max-height: none;
+  overflow: auto;
+  padding: 10px 14px;
+  border-radius: 6px;
+}
+
+#dlg-files .html-preview {
+  flex: 1;
+  min-height: 0;
+  height: 100%;
+  max-height: none;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+#dlg-files .file-preview-image {
+  flex: 1;
+  min-height: 0;
+  max-height: none;
+}
+
+#dlg-files .file-preview-image img {
+  max-width: 100%;
+  max-height: calc(100vh - 140px);
+}
+
+#dlg-files #files-error {
+  flex: none;
+  margin-top: 4px;
+}
+
 /* Per-message list of files a turn changed (under the user message). */
 .file-changes {
   margin-top: 8px;
@@ -3432,7 +3721,7 @@ select:focus-visible,
   }
 
   .msg + .msg {
-    margin-top: 18px;
+    margin-top: 10px;
   }
 
   .msg.user .msg-body {
@@ -3634,6 +3923,98 @@ select:focus-visible,
   cursor: zoom-out;
 }
 
+/* --------- Multi-image gallery (produced pictures) --------- */
+.img-gallery {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+}
+
+.img-gallery-title {
+  font-size: 12px;
+  color: var(--dimmer);
+}
+
+.img-gallery-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 8px;
+}
+
+.img-tile {
+  margin: 0;
+  border: 1px solid var(--border-soft);
+  border-radius: 10px;
+  overflow: hidden;
+  background: var(--surface-1);
+  cursor: zoom-in;
+}
+
+.img-tile img {
+  display: block;
+  width: 100%;
+  aspect-ratio: 4 / 3;
+  object-fit: cover;
+}
+
+.img-tile figcaption {
+  padding: 5px 8px;
+  font-size: 11px;
+  color: var(--dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.img-tile:hover {
+  border-color: var(--accent);
+}
+
+.img-tile.thumb-broken {
+  display: none;
+}
+
+/* --------- Lightbox paging controls --------- */
+.lightbox-nav {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  pointer-events: none;
+}
+
+.lightbox-arrow {
+  pointer-events: auto;
+  background: rgba(0, 0, 0, .5);
+  color: #fff;
+  border: 1px solid rgba(255, 255, 255, .25);
+  border-radius: 999px;
+  width: 46px;
+  height: 46px;
+  font-size: 26px;
+  line-height: 1;
+  cursor: pointer;
+  margin: 0 18px;
+}
+
+.lightbox-arrow:hover {
+  background: rgba(255, 255, 255, .18);
+}
+
+.lightbox-caption {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 18px;
+  text-align: center;
+  color: #fff;
+  font-size: 13px;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, .8);
+  pointer-events: none;
+}
+
 .lightbox-close {
   position: fixed;
   top: 14px;
@@ -3782,3 +4163,192 @@ select:focus-visible,
     display: none;
   }
 }
+
+
+/* ─── Code Viewer & Interactive Code Editor in Files Explorer ─── */
+.code-viewer {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-code);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  overflow: hidden;
+}
+
+.code-viewer-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 6px 0;
+}
+
+.code-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  tab-size: 2;
+  -moz-tab-size: 2;
+}
+
+.code-row {
+  border: none;
+}
+
+.code-row:hover {
+  background: var(--hover);
+}
+
+.line-num {
+  width: 1%;
+  white-space: nowrap;
+  user-select: none;
+  -webkit-user-select: none;
+  text-align: right;
+  padding: 0 10px 0 12px;
+  color: var(--dimmer);
+  font-variant-numeric: tabular-nums;
+  vertical-align: top;
+  border-right: 1px solid var(--border-soft);
+  opacity: .75;
+  font-size: 11.5px;
+}
+
+.line-code {
+  padding: 0 12px 0 10px;
+  white-space: pre;
+  color: var(--text);
+  vertical-align: top;
+  word-break: normal;
+  font-size: 12px;
+}
+
+.code-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 6px;
+  height: 22px;
+  font-size: 10.5px;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: .03em;
+  background: var(--tag-bg);
+  color: var(--tag-fg);
+  border-radius: 4px;
+}
+
+.code-lines-count {
+  font-size: 11px;
+  color: var(--dimmer);
+}
+
+.code-dirty-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 6px;
+  height: 22px;
+  font-size: 10.5px;
+  font-weight: 600;
+  background: var(--danger-bg);
+  color: var(--danger);
+  border: 1px solid var(--danger-border);
+  border-radius: 4px;
+}
+
+.code-copy-btn,
+.code-format-btn,
+.code-edit-btn,
+.code-save-btn,
+.code-cancel-btn {
+  font-size: 11px;
+  padding: 2px 8px;
+  height: 24px;
+  border-radius: 5px;
+  cursor: pointer;
+  line-height: 1;
+}
+
+.code-copy-btn.copied {
+  color: var(--ok);
+  border-color: var(--ok);
+}
+
+.code-save-btn {
+  font-weight: 600;
+}
+
+/* Interactive Code Editor */
+.code-editor-wrap {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  background: var(--bg-code);
+  overflow: hidden;
+}
+
+.editor-gutter {
+  width: 44px;
+  min-width: 44px;
+  overflow: hidden;
+  user-select: none;
+  -webkit-user-select: none;
+  background: var(--bg-sunken);
+  border-right: 1px solid var(--border-soft);
+  color: var(--dimmer);
+  text-align: right;
+  padding: 6px 8px 6px 0;
+  box-sizing: border-box;
+  font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
+  font-size: 11.5px;
+  line-height: 18px;
+  opacity: .75;
+}
+
+.editor-line-num {
+  height: 18px;
+  line-height: 18px;
+  font-variant-numeric: tabular-nums;
+}
+
+.editor-textarea {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  background: transparent;
+  color: var(--text);
+  font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
+  font-size: 12px;
+  line-height: 18px;
+  tab-size: 2;
+  -moz-tab-size: 2;
+  border: none;
+  outline: none;
+  resize: none;
+  white-space: pre;
+  overflow: auto;
+  padding: 6px 12px;
+  box-sizing: border-box;
+  caret-color: var(--accent);
+}
+
+/* Syntax token colors */
+.syn-keyword { color: var(--syn-keyword); font-weight: 500; }
+.syn-string { color: var(--syn-string); }
+.syn-comment { color: var(--syn-comment); font-style: italic; }
+.syn-number { color: var(--syn-number); }
+.syn-fn { color: var(--syn-fn); }
+.syn-type { color: var(--syn-type); }
+.syn-tag { color: var(--syn-tag); }
+.syn-attr { color: var(--syn-attr); }
+.syn-prop { color: var(--syn-prop); }
+.syn-var { color: var(--syn-var); }
+.syn-bool { color: var(--syn-bool); font-weight: 500; }
+.syn-op { color: var(--syn-op); }
+.syn-punct { color: var(--syn-punct); }
+.syn-entity { color: var(--syn-entity); }
+.syn-doctype { color: var(--syn-doctype); font-style: italic; }
+.syn-regex { color: var(--syn-string); }
+.syn-decorator { color: var(--syn-type); }

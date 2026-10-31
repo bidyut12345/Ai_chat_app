@@ -9,7 +9,7 @@ import path from 'node:path';
 import { chatCompletion, consumeChatStream, mcpToolsToOpenAi, unavailableToolResult } from './openai.js';
 import { allTools, callTool } from './mcpManager.js';
 import { isPreApproved, requestApproval, denialResult } from './approvals.js';
-import { toolNeedsApproval, runWithConversation, resolvePath } from './builtin/policy.js';
+import { toolNeedsApproval, runWithConversation, resolvePath, fileRoot } from './builtin/policy.js';
 import { runWithFileChanges } from './fileChanges.js';
 import { maybeCompress, trimMessagesInPlace, generateTitle, pruneToolCallPayload } from './context.js';
 
@@ -78,6 +78,53 @@ function describeProducedFile(qualifiedName, args) {
   } catch {
     return null;
   }
+}
+
+// Image extensions the browser can preview inline.
+const IMAGE_EXT_RE = /\.(png|jpe?g|gif|webp|bmp|avif|ico)$/i;
+// Folders that are never worth scanning for produced images.
+const SCAN_SKIP = new Set(['node_modules', '.git', '.venv', 'venv', '__pycache__', 'dist', 'build', '.next', '.cache']);
+const SCAN_MAX_FILES = 4000;
+const SCAN_MAX_DEPTH = 6;
+
+/**
+ * A tool that is not a files__* writer (shell curl/Invoke-WebRequest, an MCP
+ * image tool, python, etc.) can still drop pictures into the working folder.
+ * Collect those so the browser can preview them even though no file_created
+ * event was emitted for a producing tool. Best-effort: never throws.
+ */
+function findNewImages(root, sinceMs, knownPaths) {
+  const found = [];
+  let visited = 0;
+  const walk = (dir, depth) => {
+    if (depth > SCAN_MAX_DEPTH || visited > SCAN_MAX_FILES) return;
+    let entries;
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+    for (const ent of entries) {
+      if (visited > SCAN_MAX_FILES) return;
+      if (ent.isDirectory()) {
+        if (SCAN_SKIP.has(ent.name) || ent.name.startsWith('.')) continue;
+        walk(path.join(dir, ent.name), depth + 1);
+        continue;
+      }
+      if (!ent.isFile() || !IMAGE_EXT_RE.test(ent.name)) continue;
+      visited += 1;
+      const abs = path.join(dir, ent.name);
+      if (knownPaths.has(abs)) continue;
+      let st;
+      try { st = fs.statSync(abs); } catch { continue; }
+      if (st.mtimeMs < sinceMs) continue;
+      found.push({
+        path: abs,
+        name: ent.name,
+        dir: false,
+        size: st.size,
+        mtime: st.mtime.toISOString()
+      });
+    }
+  };
+  try { walk(root, 0); } catch { /* best-effort */ }
+  return found;
 }
 
 /** Merge per-round usage / timing counters reported by the server. */
@@ -392,6 +439,7 @@ async function runChatTurnInner({ emit, signal, toolControl, conversation, cfg, 
   for (let round = 0; round < maxRounds; round++) {
     roundSegs = [];
     roundFiles = [];
+    const roundStartMs = Date.now() - 1000;
     roundText = '';
     roundThink = '';
     // Within a single tool-heavy turn the live `messages` array keeps growing
@@ -594,6 +642,24 @@ async function runChatTurnInner({ emit, signal, toolControl, conversation, cfg, 
       if (cancelled) emit('tool_cancelled', { id: tc.id, name, duration_ms: toolMs });
       emit('tool_result', { id: tc.id, name, result: resultText, duration_ms: toolMs, cancelled });
     }
+    // A shell/MCP tool (curl, Invoke-WebRequest, an image server) may have
+    // written pictures we did not see as a producing tool. Fold them in so
+    // the preview gallery renders for downloaded images too.
+    {
+      const known = new Set(roundFiles.map((f) => f.path));
+      const root = conversation.workdir && String(conversation.workdir).trim()
+        ? path.resolve(String(conversation.workdir).trim())
+        : fileRoot();
+      if (root) {
+        for (const img of findNewImages(root, roundStartMs, known)) {
+          producedFiles.push(img);
+          roundFiles.push(img);
+          addSeg({ t: 'f', i: roundFiles.length - 1 });
+          emit('file_created', { id: null, ...img });
+        }
+      }
+    }
+
     // Round complete: store the final layout (calls + files interleaved as they ran).
     setExtras(toolCallRow.lastInsertRowid, {
       segments: JSON.stringify(roundSegs),

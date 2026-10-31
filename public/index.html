@@ -550,6 +550,11 @@
   <dialog id="dlg-lightbox" class="lightbox">
     <button type="button" class="icon-btn plain lightbox-close" data-close title="Close (Esc)">✕</button>
     <img id="lightbox-img" alt="image" />
+    <div id="lightbox-caption" class="lightbox-caption"></div>
+    <div id="lightbox-nav" class="lightbox-nav hidden">
+      <button type="button" class="lightbox-arrow" data-lb="prev" title="Previous (←)">‹</button>
+      <button type="button" class="lightbox-arrow" data-lb="next" title="Next (→)">›</button>
+    </div>
   </dialog>
 
   <!-- ───────── Command palette (Ctrl/Cmd+K) ───────── -->
@@ -565,6 +570,7 @@
   <div id="toast" class="toast hidden"></div>
 
   <script src="markdown.js"></script>
+  <script src="highlight.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

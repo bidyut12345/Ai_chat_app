@@ -1176,19 +1176,71 @@ function imageChip(f) {
   );
 }
 
-function fileChips(files) {
-  const box = el('div', { class: 'file-chips' });
-  for (const f of files) {
-    box.append(
-      isImageFile(f) ? imageChip(f) : el('span', { class: 'file-chip', title: f.path },
-        el('span', {}, f.dir ? '📁' : '📄'),
-        el('span', { class: 'file-chip-name' }, f.name),
-        f.dir ? null : el('span', { class: 'file-chip-size' }, fmtSize(f.size)),
-        f.dir
-          ? null
-          : el('a', { class: 'file-chip-dl', href: fileUrl(f.path), download: f.name, title: 'Download' }, '⬇ save')
+// ── Lightbox state: the group of images the viewer is currently paging ──
+const LIGHTBOX = { items: [], index: 0 };
+
+function lightboxShow(index) {
+  const lb = $('#dlg-lightbox');
+  const img = $('#lightbox-img');
+  const cap = $('#lightbox-caption');
+  const item = LIGHTBOX.items[index];
+  if (!item) return;
+  LIGHTBOX.index = index;
+  img.src = item.src;
+  img.alt = item.alt || 'image';
+  const n = LIGHTBOX.items.length;
+  if (cap) cap.textContent = n > 1 ? `${index + 1} / ${n}  ·  ${item.alt || 'image'}` : (item.alt || '');
+  const nav = $('#lightbox-nav');
+  if (nav) nav.classList.toggle('hidden', n < 2);
+  lb.showModal();
+}
+
+function lightboxStep(delta) {
+  const n = LIGHTBOX.items.length;
+  if (n < 2) return;
+  lightboxShow((LIGHTBOX.index + delta + n) % n);
+}
+
+/** A clickable grid of thumbnails; the whole group pages in the lightbox. */
+function imageGallery(images) {
+  const box = el('div', { class: 'img-gallery' });
+  box.append(el('div', { class: 'img-gallery-title' }, `🖼 ${images.length} images`));
+  const grid = el('div', { class: 'img-gallery-grid' });
+  for (const f of images) {
+    grid.append(
+      el('figure', { class: 'img-tile', title: f.path || f.name },
+        el('img', {
+          src: fileUrl(f.path, false),
+          alt: f.name,
+          loading: 'lazy',
+          onerror: (e) => { e.target.closest('.img-tile')?.classList.add('thumb-broken'); }
+        }),
+        el('figcaption', {}, f.name)
       )
     );
+  }
+  box.append(grid);
+  return box;
+}
+
+function fileChips(files) {
+  const box = el('div', { class: 'file-chips' });
+  const images = files.filter(isImageFile);
+  const others = files.filter((f) => !isImageFile(f));
+
+  // Several pictures read better as one grid than as a stack of chips.
+  if (images.length > 1) box.append(imageGallery(images));
+  else if (images.length === 1) box.append(imageChip(images[0]));
+
+  for (const f of others) {
+    box.append(el('span', { class: 'file-chip', title: f.path },
+      el('span', {}, f.dir ? '📁' : '📄'),
+      el('span', { class: 'file-chip-name' }, f.name),
+      f.dir ? null : el('span', { class: 'file-chip-size' }, fmtSize(f.size)),
+      f.dir
+        ? null
+        : el('a', { class: 'file-chip-dl', href: fileUrl(f.path), download: f.name, title: 'Download' }, '⬇ save')
+    ));
   }
   return box;
 }
@@ -1535,13 +1587,20 @@ const PREVIEW_HTML = /\.(html?|xhtml)$/i;
 async function previewFile(e) {
   filesError('');
   const list = $('#files-list');
-  const head = (extra = []) =>
+  const sizeSpan = el('span', { class: 'muted' }, fmtSize(e.size));
+  const head = (extra = [], cv = null) =>
     el('div', { class: 'row file-preview-head' },
       el('strong', {}, e.name),
-      el('span', { class: 'muted' }, fmtSize(e.size)),
+      sizeSpan,
       ...extra,
       el('a', { class: 'btn btn-ghost icon-btn', href: fileUrl(e.path), title: 'Download' }, '⬇'),
-      el('button', { class: 'btn', onclick: () => browseFiles(fileBrowser.path) }, '⬅ back')
+      el('button', {
+        class: 'btn',
+        onclick: () => {
+          if (cv && typeof cv.isDirty === 'function' && cv.isDirty() && !confirm('You have unsaved changes. Discard and go back?')) return;
+          browseFiles(fileBrowser.path);
+        }
+      }, '⬅ back')
     );
   list.innerHTML = '';
 
@@ -1560,32 +1619,61 @@ async function previewFile(e) {
   try {
     const r = await api(`/conversations/${state.currentId}/fs/raw?path=${encodeURIComponent(e.path)}`);
     if (r.text == null) return browseFiles(fileBrowser.path);
+
+    const saveHandler = async (newCode) => {
+      await api(`/conversations/${state.currentId}/fs/write`, {
+        method: 'POST',
+        body: { path: e.path, content: newCode }
+      });
+      r.text = newCode;
+      e.size = new Blob([newCode]).size;
+      sizeSpan.textContent = fmtSize(e.size);
+    };
+
     const isMd = PREVIEW_MD.test(e.path);
     const isHtml = PREVIEW_HTML.test(e.path);
     if (!isMd && !isHtml) {
-      // Code / plain text: one scrollable code view.
-      list.append(
-        el('div', { class: 'file-preview' }, head(),
-          el('pre', { class: 'file-preview-body' }, r.text))
-      );
+      // Code / plain text: scrollable code view with syntax coloring,
+      // line numbers, copy button, editing support, and JSON formatting.
+      const cv = typeof createCodeViewer === 'function'
+        ? createCodeViewer(r.text, e.name, { onSave: saveHandler })
+        : null;
+      if (cv) {
+        list.append(
+          el('div', { class: 'file-preview' },
+            head(cv.badges, cv),
+            cv.container
+          )
+        );
+      } else {
+        list.append(
+          el('div', { class: 'file-preview' }, head(),
+            el('pre', { class: 'file-preview-body' }, r.text))
+        );
+      }
       return;
     }
 
-    // Markdown and HTML get a rendered preview plus the raw source, switchable.
-    const codeView = el('pre', { class: 'file-preview-body' }, r.text);
+    // Markdown and HTML get a rendered preview plus the raw source/editor, switchable.
+    const cv = typeof createCodeViewer === 'function'
+      ? createCodeViewer(r.text, e.name, { onSave: saveHandler })
+      : null;
+    const codeView = cv ? cv.container : el('pre', { class: 'file-preview-body' }, r.text);
     const content = el('div', { class: 'file-preview-content' });
     const tabs = el('div', { class: 'file-view-tabs' });
     let mode = 'preview';
     const paint = () => {
       tabs.querySelectorAll('button').forEach((b) => b.classList.toggle('on', b.dataset.mode === mode));
+      if (cv) cv.badges.forEach((b) => b.classList.toggle('hidden', mode !== 'code'));
       content.innerHTML = '';
       if (mode === 'code') {
         content.append(codeView);
         return;
       }
+      const textToPreview = cv ? cv.getCode() : r.text;
       if (isMd) {
         const md = el('div', { class: 'md-preview' });
-        md.innerHTML = renderMarkdown(r.text);
+        md.innerHTML = renderMarkdown(textToPreview);
         content.append(md);
       } else {
         // No allow-scripts and no allow-same-origin: a preview must not be able
@@ -1596,7 +1684,7 @@ async function previewFile(e) {
             sandbox: '',
             referrerpolicy: 'no-referrer',
             title: `${e.name} preview`,
-            srcdoc: r.text
+            srcdoc: textToPreview
           })
         );
       }
@@ -1612,7 +1700,7 @@ async function previewFile(e) {
       }, label));
     }
     paint();
-    list.append(el('div', { class: 'file-preview' }, head([tabs]), content));
+    list.append(el('div', { class: 'file-preview' }, head([tabs, ...(cv ? cv.badges : [])], cv), content));
   } catch (err) {
     filesError(err.message);
   }
@@ -3764,18 +3852,30 @@ function wire() {
   });
 
   // Images in chat open in a fullscreen lightbox
+  // Images in chat open in a fullscreen lightbox. If the clicked image is
+  // part of a gallery (or the reply simply holds several pictures), the
+  // whole group becomes a navigable slideshow with arrows and key controls.
   const lightbox = $('#dlg-lightbox');
   const lightboxImg = $('#lightbox-img');
   document.addEventListener('click', (e) => {
+    if (e.target.closest?.('#dlg-lightbox')) return;
     const img = e.target.closest?.('#messages img');
-    if (!img || img.closest('#dlg-lightbox')) return;
-    lightboxImg.src = img.currentSrc || img.src;
-    lightboxImg.alt = img.alt || 'image';
-    lightbox.showModal();
+    if (!img || img === lightboxImg) return;
+    const scope = img.closest('.img-gallery') || img.closest('.bubble') || document;
+    const nodes = [...scope.querySelectorAll('img')].filter((n) => n !== lightboxImg);
+    LIGHTBOX.items = nodes.map((n) => ({ src: n.currentSrc || n.src, alt: n.alt || 'image' }));
+    const idx = nodes.indexOf(img);
+    lightboxShow(idx < 0 ? 0 : idx);
   });
-  // Click anywhere on the overlay (image itself or its empty margins) closes it.
   lightbox.addEventListener('click', (e) => {
+    const act = e.target.closest?.('[data-lb]')?.getAttribute('data-lb');
+    if (act === 'prev') { e.stopPropagation(); return lightboxStep(-1); }
+    if (act === 'next') { e.stopPropagation(); return lightboxStep(1); }
     if (e.target === lightbox || e.target === lightboxImg) lightbox.close();
+  });
+  lightbox.addEventListener('keydown', (e) => {
+    if (e.key === 'ArrowLeft') { e.preventDefault(); lightboxStep(-1); }
+    else if (e.key === 'ArrowRight') { e.preventDefault(); lightboxStep(1); }
   });
   lightbox.addEventListener('close', () => {
     lightboxImg.removeAttribute('src');
