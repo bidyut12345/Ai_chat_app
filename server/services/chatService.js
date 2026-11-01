@@ -310,7 +310,10 @@ function parseStoredToolCalls(raw) {
 /** Rebuild the OpenAI message list for a conversation, including tool traffic. */
 export function buildMessages(conversationId, { systemPrompt, extraSystem, summary, summarizedUpto } = {}) {
   const msgs = [];
-  const sys = [systemPrompt, extraSystem].filter((s) => s && s.trim()).join('\n\n');
+  const sysParts = [`[Conversation #${conversationId}]`];
+  if (systemPrompt && systemPrompt.trim()) sysParts.push(systemPrompt.trim());
+  if (extraSystem && extraSystem.trim()) sysParts.push(extraSystem.trim());
+  const sys = sysParts.join('\n\n');
   if (sys) msgs.push({ role: 'system', content: sys });
   // Older turns rolled into a summary (auto-compress): replay a compact recap
   // instead of the verbatim history, so the prompt stays within budget.
@@ -345,7 +348,7 @@ export function buildMessages(conversationId, { systemPrompt, extraSystem, summa
     if (r.role === 'assistant' && r.tool_calls) {
       const tcs = parseStoredToolCalls(r.tool_calls);
       if (tcs) {
-        m.tool_calls = tcs.map(pruneToolCallPayload);
+        m.tool_calls = tcs;
         for (const tc of tcs) liveIds.add(tc.id);
       }
     }

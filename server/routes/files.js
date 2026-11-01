@@ -17,12 +17,13 @@ import os from 'node:os';
 import { db } from '../db.js';
 import { runWithPolicy, resolvePath, fileRoot, PolicyError } from '../services/builtin/policy.js';
 import { diffLines, changeStats, isNoopChange, revertChange } from '../services/fileChanges.js';
+import { collectEntries, buildZipBuffer } from '../services/builtin/zip.js';
 
 export const MAX_UPLOAD_BYTES = 100 * 1024 * 1024;
 const MAX_LIST = 3000;
 const MAX_PREVIEW_BYTES = 256 * 1024;
 
-const TEXTISH = /\.(txt|md|markdown|json|jsonl|csv|tsv|ya?ml|toml|ini|cfg|conf|log|xml|html?|css|scss|js|mjs|cjs|jsx|ts|tsx|py|rb|go|rs|c|h|cpp|hpp|java|kt|swift|sh|bash|ps1|bat|cmd|sql|php|pl|lua|r|tex|srt|vtt|env|gitignore|dockerfile)$/i;
+const TEXTISH = /\.(txt|md|markdown|json|jsonl|csv|tsv|ya?ml|toml|ini|cfg|conf|log|xml|html?|css|scss|js|mjs|cjs|jsx|ts|tsx|dart|py|rb|go|rs|c|h|cpp|hpp|java|kt|swift|sh|bash|ps1|bat|cmd|sql|php|pl|lua|r|tex|srt|vtt|env|gitignore|dockerfile)$/i;
 
 const isTextish = (p) => TEXTISH.test(p) || /(^|[/\\])(dockerfile|makefile|readme|license)(\..*)?$/i.test(p);
 
@@ -231,6 +232,36 @@ conversationFsRouter.get('/raw', async (req, res) => {
       `attachment; filename*=UTF-8''${encodeURIComponent(name)}`
     );
     await fsp.readFile(abs).then((buf) => res.end(buf));
+    return undefined;
+  } catch (e) {
+    sendError(res, e);
+    return undefined;
+  }
+});
+
+/**
+ * Download a folder as a .zip, built in memory and streamed to the browser.
+ * Respects the conversation's access policy. node_modules/.git/build output
+ * are skipped (see zip.collectEntries). Large trees are capped there too.
+ */
+conversationFsRouter.get('/zip', async (req, res) => {
+  const conv = conversation(req, res);
+  if (!conv) return undefined;
+  try {
+    const abs = convPath(conv, req.query.path, { mustExist: true });
+    const st = await fsp.stat(abs);
+    if (!st.isDirectory()) return res.status(400).json({ error: 'Only folders can be zipped. Download files directly.' });
+    const { entries, totalBytes } = await collectEntries([abs]);
+    const name = path.basename(abs).replace(/\.zip$/i, '') || 'folder';
+    if (!entries.length) {
+      entries.push({ name: `${name}/`, dir: true, mtime: st.mtime });
+    }
+    if (totalBytes > 512 * 1024 * 1024) return res.status(413).json({ error: 'Folder is too large to zip (512 MB max).' });
+    const { buffer } = await buildZipBuffer(entries);
+    res.setHeader('Content-Type', 'application/zip');
+    res.setHeader('Content-Length', String(buffer.length));
+    res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(name)}.zip`);
+    res.end(buffer);
     return undefined;
   } catch (e) {
     sendError(res, e);

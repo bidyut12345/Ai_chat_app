@@ -115,11 +115,11 @@ export function pruneToolCallPayload(tc) {
     const parsed = JSON.parse(tc.function.arguments);
     let changed = false;
     if (parsed && typeof parsed.content === 'string' && parsed.content.length > 200) {
-      parsed.content = `[file written: ${parsed.content.length} chars]`;
+      parsed.content = `/* Content elided from history: ${parsed.content.length} characters */`;
       changed = true;
     }
     if (parsed && typeof parsed.replacement === 'string' && parsed.replacement.length > 200) {
-      parsed.replacement = `[replaced snippet: ${parsed.replacement.length} chars]`;
+      parsed.replacement = `/* Replacement snippet elided from history: ${parsed.replacement.length} characters */`;
       changed = true;
     }
     if (changed) {

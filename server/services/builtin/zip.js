@@ -140,105 +140,124 @@ export async function collectEntries(sources, opts = {}) {
  * plus optional `{ dir: true, mtime }`.
  * Returns `{ entries, size }`.
  */
-export async function writeZipFile(destAbs, entries) {
-  await fsp.mkdir(path.dirname(destAbs), { recursive: true });
-  const fd = fs.openSync(destAbs, 'w');
+/**
+ * Assemble a ZIP archive and stream its bytes through `write(buf)`.
+ * Tracks offsets internally so both the on-disk and in-memory writers share
+ * one code path. Returns `{ entries, size }`.
+ */
+async function assembleZip(entries, write) {
   const central = [];
   let offset = 0;
 
-  const write = (buf) => {
+  const emit = (buf) => {
     if (!buf.length) return;
-    fs.writeSync(fd, buf);
+    write(buf);
     offset += buf.length;
   };
 
-  try {
-    for (const e of entries) {
-      const nameBuf = Buffer.from(String(e.name), 'utf8');
-      const isDir = !!e.dir || String(e.name).endsWith('/');
-      const data = isDir ? Buffer.alloc(0) : e.data != null ? Buffer.from(e.data) : await fsp.readFile(e.source);
-      const crc = isDir ? 0 : crc32(data);
-      let method = 0;
-      let payload = data;
-      if (!isDir && data.length) {
-        const compressed = zlib.deflateRawSync(data);
-        if (compressed.length < data.length) {
-          method = 8;
-          payload = compressed;
-        }
+  for (const e of entries) {
+    const nameBuf = Buffer.from(String(e.name), 'utf8');
+    const isDir = !!e.dir || String(e.name).endsWith('/');
+    const data = isDir ? Buffer.alloc(0) : e.data != null ? Buffer.from(e.data) : await fsp.readFile(e.source);
+    const crc = isDir ? 0 : crc32(data);
+    let method = 0;
+    let payload = data;
+    if (!isDir && data.length) {
+      const compressed = zlib.deflateRawSync(data);
+      if (compressed.length < data.length) {
+        method = 8;
+        payload = compressed;
       }
-      const { time, date } = dosDateTime(e.mtime);
-      const localOffset = offset;
-
-      const header = Buffer.alloc(30);
-      header.writeUInt32LE(0x04034b50, 0);
-      header.writeUInt16LE(20, 4); // version needed
-      header.writeUInt16LE(0x0800, 6); // UTF-8 names
-      header.writeUInt16LE(method, 8);
-      header.writeUInt16LE(time, 10);
-      header.writeUInt16LE(date, 12);
-      header.writeUInt32LE(crc >>> 0, 14);
-      header.writeUInt32LE(payload.length, 18);
-      header.writeUInt32LE(isDir ? 0 : data.length, 22);
-      header.writeUInt16LE(nameBuf.length, 26);
-      header.writeUInt16LE(0, 28);
-      write(header);
-      write(nameBuf);
-      write(payload);
-
-      central.push({
-        nameBuf,
-        crc,
-        compSize: payload.length,
-        uncompSize: isDir ? 0 : data.length,
-        method,
-        time,
-        date,
-        localOffset,
-        dir: isDir
-      });
     }
+    const { time, date } = dosDateTime(e.mtime);
+    const localOffset = offset;
 
-    const cdStart = offset;
-    for (const e of central) {
-      const h = Buffer.alloc(46);
-      h.writeUInt32LE(0x02014b50, 0);
-      h.writeUInt16LE(20, 4); // version made by
-      h.writeUInt16LE(20, 6); // version needed
-      h.writeUInt16LE(0x0800, 8); // UTF-8 names
-      h.writeUInt16LE(e.method, 10);
-      h.writeUInt16LE(e.time, 12);
-      h.writeUInt16LE(e.date, 14);
-      h.writeUInt32LE(e.crc >>> 0, 16);
-      h.writeUInt32LE(e.compSize, 20);
-      h.writeUInt32LE(e.uncompSize, 24);
-      h.writeUInt16LE(e.nameBuf.length, 28);
-      h.writeUInt16LE(0, 30); // extra
-      h.writeUInt16LE(0, 32); // comment
-      h.writeUInt16LE(0, 34); // disk
-      h.writeUInt16LE(0, 36); // internal attrs
-      h.writeUInt32LE(e.dir ? 0x10 : 0, 38); // external attrs
-      h.writeUInt32LE(e.localOffset, 42);
-      write(h);
-      write(e.nameBuf);
-    }
+    const header = Buffer.alloc(30);
+    header.writeUInt32LE(0x04034b50, 0);
+    header.writeUInt16LE(20, 4); // version needed
+    header.writeUInt16LE(0x0800, 6); // UTF-8 names
+    header.writeUInt16LE(method, 8);
+    header.writeUInt16LE(time, 10);
+    header.writeUInt16LE(date, 12);
+    header.writeUInt32LE(crc >>> 0, 14);
+    header.writeUInt32LE(payload.length, 18);
+    header.writeUInt32LE(isDir ? 0 : data.length, 22);
+    header.writeUInt16LE(nameBuf.length, 26);
+    header.writeUInt16LE(0, 28);
+    emit(header);
+    emit(nameBuf);
+    emit(payload);
 
-    const cdSize = offset - cdStart;
-    const eocd = Buffer.alloc(22);
-    eocd.writeUInt32LE(0x06054b50, 0);
-    eocd.writeUInt16LE(0, 4);
-    eocd.writeUInt16LE(0, 6);
-    eocd.writeUInt16LE(central.length & 0xffff, 8);
-    eocd.writeUInt16LE(central.length & 0xffff, 10);
-    eocd.writeUInt32LE(cdSize, 12);
-    eocd.writeUInt32LE(cdStart, 16);
-    eocd.writeUInt16LE(0, 20);
-    write(eocd);
+    central.push({
+      nameBuf,
+      crc,
+      compSize: payload.length,
+      uncompSize: isDir ? 0 : data.length,
+      method,
+      time,
+      date,
+      localOffset,
+      dir: isDir
+    });
+  }
+
+  const cdStart = offset;
+  for (const e of central) {
+    const h = Buffer.alloc(46);
+    h.writeUInt32LE(0x02014b50, 0);
+    h.writeUInt16LE(20, 4); // version made by
+    h.writeUInt16LE(20, 6); // version needed
+    h.writeUInt16LE(0x0800, 8); // UTF-8 names
+    h.writeUInt16LE(e.method, 10);
+    h.writeUInt16LE(e.time, 12);
+    h.writeUInt16LE(e.date, 14);
+    h.writeUInt32LE(e.crc >>> 0, 16);
+    h.writeUInt32LE(e.compSize, 20);
+    h.writeUInt32LE(e.uncompSize, 24);
+    h.writeUInt16LE(e.nameBuf.length, 28);
+    h.writeUInt16LE(0, 30); // extra
+    h.writeUInt16LE(0, 32); // comment
+    h.writeUInt16LE(0, 34); // disk
+    h.writeUInt16LE(0, 36); // internal attrs
+    h.writeUInt32LE(e.dir ? 0x10 : 0, 38); // external attrs
+    h.writeUInt32LE(e.localOffset, 42);
+    emit(h);
+    emit(e.nameBuf);
+  }
+
+  const cdSize = offset - cdStart;
+  const eocd = Buffer.alloc(22);
+  eocd.writeUInt32LE(0x06054b50, 0);
+  eocd.writeUInt16LE(0, 4);
+  eocd.writeUInt16LE(0, 6);
+  eocd.writeUInt16LE(central.length & 0xffff, 8);
+  eocd.writeUInt16LE(central.length & 0xffff, 10);
+  eocd.writeUInt32LE(cdSize, 12);
+  eocd.writeUInt32LE(cdStart, 16);
+  eocd.writeUInt16LE(0, 20);
+  emit(eocd);
+
+  return { entries: central.length, size: offset };
+}
+
+export async function writeZipFile(destAbs, entries) {
+  await fsp.mkdir(path.dirname(destAbs), { recursive: true });
+  const fd = fs.openSync(destAbs, 'w');
+  try {
+    return await assembleZip(entries, (buf) => fs.writeSync(fd, buf));
   } finally {
     fs.closeSync(fd);
   }
+}
 
-  return { entries: central.length, size: offset };
+/**
+ * Build a ZIP archive entirely in memory and return `{ buffer, entries, size }`.
+ * Used to stream a folder download without writing a temp file to disk.
+ */
+export async function buildZipBuffer(entries) {
+  const chunks = [];
+  const result = await assembleZip(entries, (buf) => chunks.push(buf));
+  return { buffer: Buffer.concat(chunks), ...result };
 }
 
 /* ─────────────────────────── Reading ─────────────────────────── */

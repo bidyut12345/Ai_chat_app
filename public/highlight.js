@@ -26,6 +26,7 @@
     shell: 'Shell',
     powershell: 'PowerShell',
     markdown: 'Markdown',
+    dart: 'Dart',
     c: 'C',
     cpp: 'C++',
     csharp: 'C#',
@@ -58,6 +59,7 @@
       jsx: 'javascript',
       ts: 'typescript',
       tsx: 'typescript',
+      dart: 'dart',
       json: 'json',
       jsonc: 'json',
       jsonl: 'json',
@@ -111,6 +113,18 @@
 
   // Regex rules for language tokenization using sticky flags (/y)
   const RULES = {
+    dart: [
+      { type: 'comment', regex: /\/\/[^\n]*|\/\*[\s\S]*?\*\//y },
+      { type: 'string', regex: /r'(?:[^'\\]|\\.)*'|r"(?:[^"\\]|\\.)*"|'''[\s\S]*?'''|"""[\s\S]*?"""|'(?:\\.|[^'\\])*'|"(?:\\.|[^"\\])*"/y },
+      { type: 'number', regex: /\b(?:0x[a-fA-F0-9]+|\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)\b/y },
+      { type: 'keyword', regex: /\b(?:abstract|as|assert|async|await|base|break|case|catch|class|const|continue|covariant|default|deferred|do|dynamic|else|enum|export|extends|extension|external|factory|false|final|finally|for|Function|get|hide|if|implements|import|in|interface|is|late|library|mixin|modifier|new|null|of|on|operator|part|rethrow|return|sealed|set|show|static|super|switch|sync|this|throw|true|try|typedef|var|void|when|while|with|yield)\b/y },
+      { type: 'bool', regex: /\b(?:true|false|null)\b/y },
+      { type: 'decorator', regex: /@[a-zA-Z_$][a-zA-Z0-9_$]*/y },
+      { type: 'fn', regex: /\b([a-zA-Z_$][a-zA-Z0-9_$]*)(?=\s*\()/y },
+      { type: 'type', regex: /\b(?:int|double|num|bool|String|List|Map|Set|Iterable|Future|Stream|Object|Type|Symbol|Never|Record|Widget|StatelessWidget|StatefulWidget|State|BuildContext|[A-Z][a-zA-Z0-9_$]*)\b/y },
+      { type: 'op', regex: /=>|\?\?=|\?\?|\?\.|\?|\.\.|\.\.\.|===|!==|==|!=|<=|>=|&&|\|\||\+\+|--|\+=|-=|\*=|\/=|%=|&=|\|=|\^=|~\/|[+\-*\/%&|^~<>!]/y },
+      { type: 'punct', regex: /[{}()\[\];,.:]/y }
+    ],
     javascript: [
       { type: 'comment', regex: /\/\/[^\n]*|\/\*[\s\S]*?\*\//y },
       { type: 'string', regex: /'(?:\\.|[^'\\])*'|"(?:\\.|[^"\\])*"|`(?:\\.|[^`\\])*`/y },
@@ -328,7 +342,7 @@
     table.appendChild(tbody);
     viewBox.appendChild(table);
 
-    // Edit box (interactive code editor with gutter)
+    // Edit box (interactive code editor with syntax-colored overlay and gutter)
     const editBox = document.createElement('div');
     editBox.className = 'code-editor-wrap hidden';
     container.appendChild(editBox);
@@ -337,13 +351,22 @@
     gutter.className = 'editor-gutter';
     editBox.appendChild(gutter);
 
+    const editorStage = document.createElement('div');
+    editorStage.className = 'editor-stage';
+    editBox.appendChild(editorStage);
+
+    const highlightLayer = document.createElement('pre');
+    highlightLayer.className = 'editor-highlight-layer';
+    highlightLayer.setAttribute('aria-hidden', 'true');
+    editorStage.appendChild(highlightLayer);
+
     const textarea = document.createElement('textarea');
     textarea.className = 'editor-textarea';
     textarea.spellcheck = false;
     textarea.autocomplete = 'off';
     textarea.autocapitalize = 'off';
     textarea.wrap = 'off';
-    editBox.appendChild(textarea);
+    editorStage.appendChild(textarea);
 
     // Header badges
     const badges = [];
@@ -441,6 +464,13 @@
     btnCancel.innerHTML = '✕ Cancel';
     badges.push(btnCancel);
 
+    function updateEditorHighlight() {
+      const text = textarea.value;
+      const lines = highlightToLines(text, lang);
+      // Ensure trailing newline renders properly in pre layer so cursor does not misalign
+      highlightLayer.innerHTML = lines.join('\n') + (text.endsWith('\n') ? '\n' : '');
+    }
+
     function updateEditorGutter() {
       const lines = textarea.value.split('\n');
       const count = lines.length;
@@ -459,12 +489,15 @@
     }
 
     textarea.addEventListener('input', () => {
+      updateEditorHighlight();
       updateEditorGutter();
       checkDirty();
     });
 
     textarea.addEventListener('scroll', () => {
       gutter.scrollTop = textarea.scrollTop;
+      highlightLayer.scrollTop = textarea.scrollTop;
+      highlightLayer.scrollLeft = textarea.scrollLeft;
     });
 
     textarea.addEventListener('keydown', (e) => {
@@ -495,6 +528,7 @@
           textarea.value = val.slice(0, start) + '  ' + val.slice(end);
           textarea.selectionStart = textarea.selectionEnd = start + 2;
         }
+        updateEditorHighlight();
         updateEditorGutter();
         checkDirty();
         return;
@@ -503,6 +537,7 @@
       if (e.key === 'Enter') {
         e.preventDefault();
         const start = textarea.selectionStart;
+        const end = textarea.selectionEnd;
         const val = textarea.value;
         const lineStart = val.lastIndexOf('\n', start - 1) + 1;
         const currentLine = val.slice(lineStart, start);
@@ -512,8 +547,18 @@
           indent += '  ';
         }
         const insert = '\n' + indent;
-        textarea.value = val.slice(0, start) + insert + val.slice(start);
-        textarea.selectionStart = textarea.selectionEnd = start + insert.length;
+
+        // Use document.execCommand if supported so native undo/redo works,
+        // falling back to direct value slice assignment.
+        let inserted = false;
+        try {
+          inserted = document.execCommand('insertText', false, insert);
+        } catch { /* fall back */ }
+        if (!inserted) {
+          textarea.value = val.slice(0, start) + insert + val.slice(end);
+          textarea.selectionStart = textarea.selectionEnd = start + insert.length;
+        }
+        updateEditorHighlight();
         updateEditorGutter();
         checkDirty();
         return;
@@ -534,6 +579,7 @@
         btnSave.classList.remove('hidden');
         btnCancel.classList.remove('hidden');
 
+        updateEditorHighlight();
         updateEditorGutter();
         checkDirty();
         setTimeout(() => textarea.focus(), 30);

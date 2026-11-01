@@ -422,6 +422,183 @@ Verified:
 - Automated test suites: `test/builtin-tools.mjs` (59 passed), `test/auth.mjs` (38 passed), `test/context-compress.mjs` (34 passed), `test/automation.mjs` (50 passed, 1 skipped).
 - Headless Chrome end-to-end verification: verified compact file list layout, switching into editor mode, typing edits, dirty indicator, Ctrl+S / Save button calling write API, file on disk verified to contain edits, and syntax view updated. Screenshots saved.
 
+### 2026-10-31 — download folder as zip in file explorer
+
+> "Allow to download  folder as zip in file explorer"
+
+Status: **done**.
+- **Backend Folder ZIP Endpoint (`server/routes/files.js`, `server/services/builtin/zip.js`)**:
+  - `GET /api/conversations/:id/fs/zip?path=...`: Assembles folder contents in memory and streams a `.zip` archive with `Content-Type: application/zip` and `Content-Disposition: attachment; filename="<name>.zip"`.
+  - Respects per-conversation policy checks (`convPath`), ignores build directories (`node_modules`, `.git`, `dist`, etc.), and caps at 512MB max size.
+  - Safe empty folder fallback: creates an entry for the folder itself so even empty directories download a valid archive without 400 errors.
+- **File Explorer UI & Message Folder Downloads (`public/index.html`, `public/app.js`)**:
+  - Each directory row in `#files-list` has a `⬇` download button with `download="<name>.zip"` and tooltip `Download folder "<name>" as .zip`.
+  - Top navigation row of `#dlg-files` features a `⬇ ZIP` button (`#btn-files-zip`) to download the current folder / workspace root as a `.zip` archive, with a toast notification.
+  - Directory chips produced in chat messages (`fileChips`) also feature a `⬇ zip` download button.
+
+Verified:
+- `node --check` passed across all modified files.
+- Automated tests: `test/builtin-tools.mjs` (59 passed), `test/auth.mjs` (38 passed), `test/context-compress.mjs` (34 passed), `test/automation.mjs` (49 passed, 2 skipped).
+- Integration test on scratch port: verified root workspace zip download, subfolder zip download, and empty folder zip download.
+- Headless Chrome UI verification: verified folder row `⬇` download button attributes (`download="components.zip"`, `href="/api/conversations/1/fs/zip?..."`), top bar `⬇ ZIP` button, and screenshot captured.
+
+### 2026-10-31 — fix context leak between conversations
+
+> "context leak between conversation."
+
+Status: **done**. Scoped conversation ID prefix in system prompt to isolate upstream KV/prefix cache; stopped mutating write_file/edit_file arguments in regular turn history; client-side immediate message/token meter reset on chat switch with draft preservation per chat.
+
+### 2026-10-31 — restart server button & sidebar buttons cleanup
+
+> "add a restart server button in the left expandable pane below setting that will start the "C:\AI\gufo-build-start.cmd" script.
+>
+> also remove the MCP Server button and personas button from left expandable pane."
+
+Status: **done**.
+- **Sidebar Cleanup (`public/index.html`)**:
+  - Removed `#btn-open-prompts` ("🎭 Personas") and `#btn-open-mcp` ("🔌 MCP servers") from `.foot-buttons` in the left expandable pane.
+  - Added `#btn-restart-server` ("🔄 Restart server") directly below `#btn-open-settings` ("⚙ Settings").
+  - Preserved Personas and MCP server dialog triggers via the Command Palette (`Ctrl+K`), Settings modal, composer prompt selector, and the blank-chat setup cards.
+- **Backend Restart Endpoint (`server/routes/settings.js`)**:
+  - Added `POST /api/settings/restart-ai-server` (protected with `requireAdmin`).
+  - Spawns `cmd.exe /c start "Gufo AI Server" C:\AI\gufo-build-start.cmd` with working directory `C:\AI` detached (`unref()`).
+  - Configurable via `RISRIGPT_AI_RESTART_SCRIPT` environment variable (default: `C:\AI\gufo-build-start.cmd`).
+- **Frontend Interaction & Health Polling (`public/app.js`, `public/styles.css`)**:
+  - Clicking `#btn-restart-server` disables the button, updates text to `⏳ Restarting…`, sets `#server-status` to "restarting…", and toasts the user.
+  - Calls `POST /api/settings/restart-ai-server` and continuously polls `GET /api/settings/health` every 2s until the server returns online (`ok: true`).
+  - Restores the button to `🔄 Restart server`, refreshes the health indicator to green ("N models online"), and shows a success toast.
+  - Added `.side-link:disabled` styling in `public/styles.css`.
+
+Verified:
+- `node --check` passed across `public`, `server`, and `test`.
+- Automated test suites: `test/builtin-tools.mjs` (59 passed), `test/auth.mjs` (38 passed), `test/context-compress.mjs` (34 passed), `test/automation.mjs` (50 passed, 1 skipped).
+- DOM assertion check passed: `#btn-open-settings` and `#btn-restart-server` exist; `#btn-open-prompts` and `#btn-open-mcp` are absent from the sidebar.
+- Headless Chrome screenshot verified visual appearance and placement below Settings.
+
+### 2026-10-31 — modified files expandable list at end of generated message
+
+> "put the modified files expandable list bat the end of the generated message."
+
+Status: **done**.
+- Moved the expandable modified files list (`file-changes` with diff line stats `+N −M`, **Compare**, and **Revert** buttons) from the user message bubble to the end of the generated assistant message in `renderMessage()` (`public/app.js`).
+- Implemented `priorUserMessage(m)` helper to locate the preceding user message whose turn spawned the assistant reply, matching corresponding records in `state.fileChanges`.
+- The modified files block renders at the bottom of the assistant message body, directly after the response bubble and metadata/breakdown.
+- Updated styles documentation in `public/styles.css`.
+
+Verified:
+- `node --check` clean across `public/app.js` and all JS files.
+- Automated test suites: `test/builtin-tools.mjs` (59 passed), `test/auth.mjs` (38 passed), `test/context-compress.mjs` (34 passed), `test/automation.mjs` (50 passed, 1 skipped).
+- Unit verification of `priorUserMessage()` and file change attribution for assistant messages.
+
+### 2026-10-31 — modified files expandable list only once at the end of generated message
+
+> "modified files expandable list  is showng after every tool call. it should not show up after every tool , but at the end the text generation meessage only once."
+
+Status: **done**.
+- Added `isLastAssistantInTurn(m)` in `public/app.js` to ensure the `.file-changes` list only renders on the final assistant response of a turn (after all tool execution rounds are finished and the concluding text reply is generated). Intermediate tool-call assistant steps no longer append duplicate file-change cards.
+- Preserved single-point tracking, diff comparison, and per-file revert capabilities.
+
+Verified:
+- `node --check` passed on `public/app.js`.
+- All test suites passed: `test/builtin-tools.mjs` (59 passed), `test/auth.mjs` (38 passed), `test/context-compress.mjs` (34 passed), `test/automation.mjs` (50 passed, 1 skipped).
+- Unit algorithm verification of `isLastAssistantInTurn()` across multi-round tool-calling sequences.
+
+### 2026-10-31 — load earlier messages in parts based on user messages
+
+> "load earlier message in part part not all at once. if possible based uptto user each message"
+
+Status: **done**.
+- Updated transcript rendering in `public/app.js` to page messages by complete user conversation turns rather than an arbitrary raw message count.
+- Initially shows the most recent 2 user turns (`INITIAL_USER_TURNS = 2`) including all corresponding tool calls, results, and assistant outputs.
+- Adds an interactive `.load-earlier-banner` displaying the count of hidden earlier turns and messages, with:
+  - `📜 Load +N earlier turns`: progressively reveals earlier turns in chunks of 2 (`USER_TURNS_STEP = 2`).
+  - `Load all (N)`: uncollapses the entire history in one click.
+- Preserves the user's scroll anchor position when earlier messages are prepended so the viewport does not jump.
+- Added banner styling in `public/styles.css`.
+
+Verified:
+- `node --check` passed on `public/app.js`.
+- Automated test suites: `test/builtin-tools.mjs` (59 passed), `test/auth.mjs` (38 passed), `test/context-compress.mjs` (34 passed), `test/automation.mjs` (50 passed, 1 skipped).
+
+### 2026-11-01 — code file editing in file explorer & Dart language support
+
+> "allow editing of code files in file explorer. enable support for dart file."
+
+Status: **done**.
+- **Dart File Support in File Explorer & API (`server/routes/files.js`)**:
+  - Added `dart` to the `TEXTISH` regex so `.dart` files are served as readable text via `/api/conversations/:id/fs/raw` for previewing and editing, rather than forcing binary downloads.
+- **Dart Language Highlighting & Syntax Engine (`public/highlight.js`)**:
+  - Added `dart: 'Dart'` to language definitions and mapped `.dart` extension to `dart`.
+  - Added Dart lexical tokenization rules: keywords (`abstract`, `class`, `extends`, `factory`, `final`, `mixin`, `sealed`, `async`, `await`, etc.), types (`int`, `double`, `num`, `bool`, `String`, `Widget`, `BuildContext`, etc.), decorators (`@override`), functions, numbers, booleans, and operators.
+- **Code Editing in File Explorer (`public/highlight.js`, `public/app.js`)**:
+  - Interactive in-browser code editor with synchronized line numbers, Tab indentation (2 spaces), auto-indent on Enter, dirty tracking, `Ctrl+S` quick save, and direct persistence via `POST /api/conversations/:id/fs/write` seamlessly active for all code files including `.dart`.
+
+Verified:
+- `node --check` passed across `server/routes/files.js` and `public/highlight.js`.
+- Automated test suites: `test/builtin-tools.mjs` (59 passed), `test/auth.mjs` (38 passed), `test/context-compress.mjs` (34 passed), `test/automation.mjs` (50 passed, 1 skipped).
+- Unit verification of Dart syntax tokenization and `.dart` file detection.
+
+### 2026-11-01 — live syntax color formatting while editing code
+
+> "while editing keep color formatting"
+
+Status: **done**.
+- Updated the interactive code editor in `public/highlight.js` and `public/styles.css` with a live syntax-highlighted overlay layer (`.editor-highlight-layer`).
+- As the user types, edits, pastes, or indents in the editor textarea, syntax tokens and colors (keywords, strings, comments, types, functions, numbers, decorators, etc.) update in real time.
+- Uses synchronized scrolling (`scrollTop` and `scrollLeft`) with pixel-matched monospace geometry, transparent textarea text with visible caret (`caret-color: var(--accent)`), and identical padding/font/line-height/tab-size.
+
+Verified:
+- `node --check` passed across `public/highlight.js`.
+- Automated test suites: `test/builtin-tools.mjs` (59 passed), `test/auth.mjs` (38 passed), `test/context-compress.mjs` (34 passed), `test/automation.mjs` (50 passed, 1 skipped).
+
+### 2026-11-01 — fix Enter key new line creation in code editor
+
+> "on pressing enter , the cursor goes to next line but not creating a new line on code editing in file explorer"
+
+Status: **done**.
+- Updated `keydown` Enter and Tab handlers in `public/highlight.js`:
+  - When Enter is pressed, `updateEditorHighlight()` is called synchronously after inserting the newline and indentation so the underlying syntax-highlighted display layer renders the new line simultaneously with the textarea and line gutter.
+  - Used `document.execCommand('insertText')` when supported for native undo history with fallback to textarea selection replacement.
+
+Verified:
+- `node --check` passed across `public/highlight.js`.
+- Automated test suites: `test/builtin-tools.mjs` (59 passed), `test/auth.mjs` (38 passed), `test/context-compress.mjs` (34 passed), `test/automation.mjs` (50 passed, 1 skipped).
+
+
+### 2026-11-01 — redesign settings UI with tabs and common save button
+
+> "redesign the setting page ui with tab view for each section and a command save button."
+
+Status: **done**.
+- **Redesigned Settings Modal with Tabbed UI (`#dlg-settings`)**:
+  - Replaced the continuous single scroll container with a clean, horizontal tab strip (`.settings-tabs`):
+    1. 🤖 **AI Server** (`#ai-section`): Base URL, API key, model selection, temperature, tokens, reasoning effort, and context management window caps.
+    2. 🛠️ **Built-in Tools** (`#tools-section`): Shell execution timeout, default working folder root, and approval grant clearing.
+    3. 🔌 **MCP Servers** (`#mcp-section`): MCP server connection list, live status tags, switches, and add/edit forms.
+    4. 👥 **Accounts** (`#accounts-section`): Sign-up registration policy for non-admin accounts.
+  - Supports keyboard accessibility (Left/Right arrow keys navigate and activate tabs).
+  - Maintains deep-linking: `scrollToSection('#mcp-section')` and command palette actions activate the respective tab panel smoothly.
+  - Admin controls: non-admin users can browse settings tabs in read-only mode without tab buttons getting disabled by `applyAdminUi()`.
+- **Common Sticky Save Button (`.modal-foot`)**:
+  - Moved `#btn-save-settings` out of Section 1 into a sticky dialog footer (`.modal-foot`) alongside Cancel.
+  - Accessible across every tab so changes to any setting can be saved with one click.
+  - Preserved individual MCP server save (`#btn-save-mcp`) without triggering parent settings form submissions.
+
+Verified:
+- `node --check` passed on `public/app.js`, `public/highlight.js`, `server/index.js`.
+- Real headless browser automation verification (`verify-settings-ui.mjs`):
+  - Verified initial tab selection (AI server) and panel visibility.
+  - Verified switching between all four tabs with smooth panel activation.
+  - Verified keyboard arrow navigation between tabs.
+  - Verified deep link switching via `scrollToSection()`.
+  - Verified common Save Settings button submits and persists settings changes across tabs.
+  - Verified compact/mobile layout stability.
+- Full automated test suites:
+  - `test/builtin-tools.mjs`: 59 passed, 0 failed.
+  - `test/auth.mjs`: 38 passed, 0 failed.
+  - `test/context-compress.mjs`: 34 passed, 0 failed.
+  - `test/automation.mjs`: 50 passed, 0 failed, 1 skipped.
+
 ### Earlier requests (from the session summary; exact wording not retained)
 
 - Full visual polish pass on the UI (theme tokens, sidebar, header, messages,

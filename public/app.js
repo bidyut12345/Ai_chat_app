@@ -1,3 +1,5 @@
+// Unsent draft text per conversation so typing in Chat A never bleeds into Chat B.
+const chatDrafts = new Map();
 /* RiSriGPT — frontend */
 'use strict';
 
@@ -326,11 +328,20 @@ async function deleteConversation(id) {
 
 /* ───────────────────────── Conversation ───────────────────────── */
 async function newConversation() {
-  // Tear down the live viewer for whatever chat is on screen *before* the
-  // async round-trip below. Otherwise the old run's events (e.g. the 'done'
-  // that arrives after you press Stop) keep painting into the current view
-  // while we're mid-switch, and can bleed the old chat into the new one.
+  if (state.currentId) {
+    chatDrafts.set(state.currentId, $('#input').value);
+  }
   detachRun();
+  $('#input').value = '';
+  autoresize();
+  clearAttachments();
+  state.messages = [];
+  state.fileChanges = [];
+  visibleUserTurns = INITIAL_USER_TURNS;
+  renderMessages();
+  lastContext = { tokens: 0, window: Number(state.settings.context_window) || 0, trigger: 0, fresh: false };
+  renderContextMeter({ processed: 0, generated: 0, context: 0 }, lastContext.window);
+
   const defaultPrompt = state.prompts.find((p) => p.is_default);
   const conv = await api('/conversations', {
     method: 'POST',
@@ -343,14 +354,52 @@ async function newConversation() {
 }
 
 async function openConversation(id) {
+  // Save unsent draft from the previous conversation so it doesn't bleed into the new one
+  if (state.currentId && state.currentId !== id) {
+    chatDrafts.set(state.currentId, $('#input').value);
+  }
+
   // Switching away must NOT stop the generation — just detach the viewer.
   detachRun();
   setRunningBadge(state.currentId, runningIds.has(state.currentId));
-  lastContext.fresh = false;
+
+  // Reset context meter and clear stale state immediately so the old chat's tokens/messages never leak
+  lastContext = { tokens: 0, window: Number(state.settings.context_window) || 0, trigger: 0, fresh: false };
+  renderContextMeter({ processed: 0, generated: 0, context: 0 }, lastContext.window);
+
   if (isMobile()) toggleSidebar(false);
   state.currentId = id;
-  showAllMessages = false;
-  const conv = await api(`/conversations/${id}`);
+  visibleUserTurns = INITIAL_USER_TURNS;
+
+  // Restore draft for this conversation (or blank) and clear attachments
+  $('#input').value = chatDrafts.get(id) || '';
+  autoresize();
+  clearAttachments();
+
+  // Clear messages array and DOM immediately so old chat content does not linger while loading
+  state.messages = [];
+  state.fileChanges = [];
+  renderMessages();
+
+  // Optimistically set title & controls from sidebar cached state
+  const cached = state.conversations.find((c) => c.id === id);
+  if (cached) {
+    $('#chat-title').value = cached.title || 'New chat';
+    $('#sel-prompt').value = cached.prompt_id ?? '';
+    $('#sel-model').value = cached.model || state.settings.model || '';
+    if ($('#sel-effort')) $('#sel-effort').value = cached.reasoning_effort || state.settings.reasoning_effort || 'auto';
+  }
+  renderConvList();
+  updateChatSub();
+
+  let conv;
+  try {
+    conv = await api(`/conversations/${id}`);
+  } catch (e) {
+    toast(`Failed to load chat: ${e.message}`, true);
+    return;
+  }
+
   // Another conversation may have been opened while this fetch was in flight.
   // Bail out so a slow response for a chat we navigated away from doesn't
   // overwrite the one now on screen.
@@ -370,8 +419,7 @@ async function openConversation(id) {
   renderChatOptions();
   if (conv.context) applyContextStatus(conv.context);
   else updateContextMeterFromMessages();
-  // (the "blank image" that appeared on text-only messages).
-  clearAttachments();
+
   // If this chat is generating, resume watching it live.
   if (runningIds.has(id)) attachToRun(id, 0, runStartedAt.get(id));
 }
@@ -634,10 +682,15 @@ async function setChatOption(patch) {
   }
 }
 
-let showAllMessages = false;
-const INITIAL_MSG_LIMIT = 50;
+// How many recent user turns to display initially before showing the "Load earlier" banner.
+const INITIAL_USER_TURNS = 2;
+// How many additional user turns to load each time the user clicks "Load earlier".
+const USER_TURNS_STEP = 2;
+let visibleUserTurns = INITIAL_USER_TURNS;
 
-function renderMessages() {
+function renderMessages(preserveScroll = false) {
+  const prevScrollHeight = $('#messages')?.scrollHeight || 0;
+  const prevScrollTop = $('#messages')?.scrollTop || 0;
   const box = $('#messages');
   // The "+" menu is moved into the blank-chat setup panel. Bring it home
   // before clearing the transcript, or it would be wiped with the messages.
@@ -675,22 +728,56 @@ function renderMessages() {
     if (rail) { rail.innerHTML = ''; rail.classList.add('hidden'); }
     return;
   }
-  if (!showAllMessages && msgs.length > INITIAL_MSG_LIMIT) {
-    const hiddenCount = msgs.length - INITIAL_MSG_LIMIT;
-    const banner = el('div', { class: 'load-earlier-banner', style: 'text-align:center; padding:12px; margin-bottom:12px;' },
-      el('button', {
-        class: 'btn btn-sm',
-        onclick: () => { showAllMessages = true; renderMessages(); }
-      }, `📜 Load ${hiddenCount} earlier messages (${msgs.length} total)`)
+  // User-turn based paging: display the most recent user messages + replies,
+  // with an expandable banner to load earlier turns in parts (or all at once).
+  const userIndices = [];
+  for (let i = 0; i < msgs.length; i++) {
+    if (msgs[i].role === 'user') userIndices.push(i);
+  }
+  const totalTurns = userIndices.length;
+  let startIndex = 0;
+  let hiddenTurns = 0;
+  if (totalTurns > visibleUserTurns && visibleUserTurns > 0) {
+    startIndex = userIndices[totalTurns - visibleUserTurns];
+    hiddenTurns = totalTurns - visibleUserTurns;
+  }
+
+  if (startIndex > 0) {
+    const hiddenMsgs = startIndex;
+    const nextStep = Math.min(USER_TURNS_STEP, hiddenTurns);
+    const stepLabel = nextStep === 1 ? "1 turn" : `${nextStep} turns`;
+    const banner = el('div', { class: 'load-earlier-banner' },
+      el('span', { class: 'load-earlier-info' }, `${hiddenTurns} earlier turn${hiddenTurns === 1 ? '' : 's'} (${hiddenMsgs} message${hiddenMsgs === 1 ? '' : 's'}) hidden`),
+      el('div', { class: 'load-earlier-actions' },
+        el('button', {
+          class: 'btn btn-sm load-earlier-btn',
+          onclick: () => {
+            visibleUserTurns += USER_TURNS_STEP;
+            renderMessages(true);
+          }
+        }, `📜 Load +${stepLabel}`),
+        el('button', {
+          class: 'btn btn-sm btn-ghost load-earlier-all',
+          onclick: () => {
+            visibleUserTurns = totalTurns;
+            renderMessages(true);
+          }
+        }, `Load all (${totalTurns})`)
+      )
     );
     box.append(banner);
-    for (let i = hiddenCount; i < msgs.length; i++) {
+    for (let i = startIndex; i < msgs.length; i++) {
       box.append(renderMessage(msgs[i]));
     }
   } else {
     for (const m of msgs) box.append(renderMessage(m));
   }
-  scrollBottom();
+  if (preserveScroll) {
+    const newScrollHeight = box.scrollHeight;
+    box.scrollTop = prevScrollTop + (newScrollHeight - prevScrollHeight);
+  } else {
+    scrollBottom();
+  }
   renderPillRail();
 }
 
@@ -957,11 +1044,6 @@ function renderMessage(m) {
     bubble.append(box);
   }
   body.append(bubble);
-  // Files this turn changed, shown under the user message that asked for them.
-  if (m.role === 'user') {
-    const changes = (state.fileChanges || []).filter((c) => c.message_id === m.id);
-    if (changes.length) body.append(fileChangeList(changes));
-  }
   if (m.role === 'assistant') {
     const stats = el('div', { class: 'msg-stats' }, statsText(m));
     body.append(stats);
@@ -972,6 +1054,13 @@ function renderMessage(m) {
           el('summary', {}, 'token breakdown'),
           tokenBreakdown(m))
       );
+    }
+    // Files this turn changed: show only once at the end of the turn (on the final assistant message),
+    // not repeated after intermediate tool-call assistant steps.
+    if (isLastAssistantInTurn(m)) {
+      const userMsg = priorUserMessage(m);
+      const changes = (state.fileChanges || []).filter((c) => (userMsg ? c.message_id === userMsg.id : false));
+      if (changes.length) body.append(fileChangeList(changes));
     }
   }
   wrap.append(body);
@@ -1202,6 +1291,40 @@ function lightboxStep(delta) {
 }
 
 /** A clickable grid of thumbnails; the whole group pages in the lightbox. */
+/** One thumbnail tile used inside the live gallery. */
+function imageTile(f) {
+  return el('figure', { class: 'img-tile', title: f.path || f.name },
+    el('img', {
+      src: fileUrl(f.path, false),
+      alt: f.name,
+      loading: 'lazy',
+      onerror: (e) => { e.target.closest('.img-tile')?.classList.add('thumb-broken'); }
+    }),
+    el('figcaption', {}, f.name)
+  );
+}
+
+/**
+ * Fold one produced file into the live reply. Images accumulate into a single
+ * gallery container so several pictures render as one grid (each clickable)
+ * instead of a stack of one-image chips; non-images stay as plain chips.
+ */
+function appendLiveFile(bubble, r, d) {
+  if (!isImageFile(d)) { bubble.append(fileChips([d])); return; }
+  if (!r.liveImages) {
+    const box = el('div', { class: 'img-gallery' });
+    const title = el('div', { class: 'img-gallery-title' });
+    const grid = el('div', { class: 'img-gallery-grid' });
+    box.append(title, grid);
+    bubble.append(box);
+    r.liveImages = { box, title, grid, count: 0 };
+  }
+  r.liveImages.count += 1;
+  r.liveImages.title.textContent = `🖼 ${r.liveImages.count} image${r.liveImages.count > 1 ? 's' : ''}`;
+  r.liveImages.grid.append(imageTile(d));
+}
+
+/** A clickable grid of thumbnails; the whole group pages in the lightbox. */
 function imageGallery(images) {
   const box = el('div', { class: 'img-gallery' });
   box.append(el('div', { class: 'img-gallery-title' }, `🖼 ${images.length} images`));
@@ -1238,7 +1361,7 @@ function fileChips(files) {
       el('span', { class: 'file-chip-name' }, f.name),
       f.dir ? null : el('span', { class: 'file-chip-size' }, fmtSize(f.size)),
       f.dir
-        ? null
+        ? el('a', { class: 'file-chip-dl', href: folderZipUrl(f.path), download: `${f.name}.zip`, title: `Download "${f.name}" folder as .zip` }, '⬇ zip')
         : el('a', { class: 'file-chip-dl', href: fileUrl(f.path), download: f.name, title: 'Download' }, '⬇ save')
     ));
   }
@@ -1543,6 +1666,11 @@ function fileUrl(p, download = true) {
   return `/api/conversations/${state.currentId}/fs/raw?${q}`;
 }
 
+// URL that streams a folder as a .zip download (server builds it in memory).
+function folderZipUrl(p) {
+  return `/api/conversations/${state.currentId}/fs/zip?path=${encodeURIComponent(p)}`;
+}
+
 // Used by markdown.js to turn local paths in model output into URLs the
 // browser can load (inline for images, download=1 for links).
 window.conversationFileUrl = (p, download = false) => fileUrl(p, download);
@@ -1567,7 +1695,9 @@ async function browseFiles(p) {
         }, e.name),
         el('span', { class: 'file-meta' }, e.dir ? '' : fmtSize(e.size)),
         el('span', { class: 'file-acts' },
-          e.dir ? null : el('a', { class: 'btn btn-ghost icon-btn', href: fileUrl(e.path), title: 'Download' }, '⬇'),
+          e.dir
+            ? el('a', { class: 'btn btn-ghost icon-btn', href: folderZipUrl(e.path), download: `${e.name}.zip`, title: `Download "${e.name}" folder as .zip` }, '⬇')
+            : el('a', { class: 'btn btn-ghost icon-btn', href: fileUrl(e.path), download: e.name, title: 'Download file' }, '⬇'),
           el('button', { class: 'btn btn-ghost icon-btn', title: 'Rename', onclick: () => renameEntry(e, row) }, '✎'),
           el('button', { class: 'btn btn-ghost icon-btn', title: 'Delete', onclick: (ev) => deleteEntry(e, ev.currentTarget) }, '🗑'))
       );
@@ -2314,7 +2444,7 @@ function handleRunEvent(r, event, d) {
       });
     }
   } else if (event === 'file_created') {
-    bubble.append(fileChips([d]));
+    appendLiveFile(bubble, r, d);
     scrollToBottomIfFollowing();
   } else if (event === 'stats') {
     r.stats = d;
@@ -2346,10 +2476,10 @@ function findChip(bubble, id) {
 }
 
 async function finishRun(r, d) {
-  if (run !== r) return;
   const convId = r.conversationId;
-  detachRun();
   setRunningBadge(convId, false);
+  if (run !== r) return;
+  detachRun();
   if (d.error) toast(d.error, true);
   await reloadConversation(convId);
   await loadConversations();
@@ -2434,6 +2564,32 @@ function updateAppBusy() {
   const busy = !!state.streaming || runningIds.size > 0;
   const sp = $('#app-spinner');
   if (sp) sp.classList.toggle('hidden', !busy);
+}
+
+/**
+ * Find the user message that started this assistant turn.
+ */
+function priorUserMessage(m) {
+  if (!m || m.role !== 'assistant') return null;
+  return [...state.messages]
+    .reverse()
+    .find((x) => x.role === 'user' && x.id < m.id) || null;
+}
+
+/**
+ * True when this assistant message is the final assistant response of its turn
+ * (i.e. not followed by another assistant message in the same turn before a new user message).
+ */
+function isLastAssistantInTurn(m) {
+  if (!m || m.role !== 'assistant') return false;
+  const idx = state.messages.findIndex((x) => x.id === m.id);
+  if (idx === -1) return true;
+  for (let i = idx + 1; i < state.messages.length; i++) {
+    const next = state.messages[i];
+    if (next.role === 'user') break;
+    if (next.role === 'assistant') return false;
+  }
+  return true;
 }
 
 /** True when an assistant reply exists after this user message. */
@@ -2712,6 +2868,64 @@ async function refreshHealth() {
   }
 }
 
+async function restartAiServer() {
+  const btn = $('#btn-restart-server');
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = '⏳ Restarting…';
+  }
+  const pill = $('#server-status');
+  if (pill) {
+    pill.innerHTML = '<span class="dot dot-grey"></span><span>restarting…</span>';
+    pill.title = 'Restarting AI server…';
+  }
+  toast('Restarting AI server…');
+
+  try {
+    const res = await api('/settings/restart-ai-server', { method: 'POST' });
+    toast(res.message || 'AI server restart initiated');
+  } catch (e) {
+    toast(`Failed to restart AI server: ${e.message}`, true);
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = '🔄 Restart server';
+    }
+    refreshHealth();
+    return;
+  }
+
+  // Poll /api/settings/health until the server is back online
+  let attempts = 0;
+  const maxAttempts = 45;
+  const pollTimer = setInterval(async () => {
+    attempts++;
+    try {
+      const r = await api('/settings/health');
+      if (r && r.ok) {
+        clearInterval(pollTimer);
+        toast('AI server is online');
+        refreshHealth();
+        if (btn) {
+          btn.disabled = false;
+          btn.textContent = '🔄 Restart server';
+        }
+        return;
+      }
+    } catch {
+      // still loading or restarting
+    }
+    if (attempts >= maxAttempts) {
+      clearInterval(pollTimer);
+      toast('AI server restart: still waiting for server to report online', true);
+      refreshHealth();
+      if (btn) {
+        btn.disabled = false;
+        btn.textContent = '🔄 Restart server';
+      }
+    }
+  }, 2000);
+}
+
 /* ───────────────────────── Settings modal ───────────────────────── */
 function openModal(sel) {
   $(sel).showModal();
@@ -2730,8 +2944,9 @@ function paletteEntries() {
     { group: 'Actions', icon: '🌗', title: `Theme: ${storedTheme} (cycle)`, run: () => cycleTheme() },
     { group: 'Actions', icon: '⤓', title: 'Compact context now', run: () => compactNow() },
     { group: 'Actions', icon: '⚙', title: 'Open settings', run: () => $('#btn-open-settings').click() },
-    { group: 'Actions', icon: '🎭', title: 'Open personas', run: () => $('#btn-open-prompts').click() },
-    { group: 'Actions', icon: '🔌', title: 'Open MCP servers', run: () => $('#btn-open-mcp').click() },
+    { group: 'Actions', icon: '🔄', title: 'Restart AI server', run: () => restartAiServer() },
+    { group: 'Actions', icon: '🎭', title: 'Open personas', run: () => { renderPromptList(); openModal('#dlg-prompts'); } },
+    { group: 'Actions', icon: '🔌', title: 'Open MCP servers', run: () => { loadSettings(); loadMcp(); openModal('#dlg-settings'); scrollToSection('#mcp-section'); } },
     { group: 'Actions', icon: '⎋', title: 'Sign out', run: () => doLogout() }
   ];
   if (state.currentId) {
@@ -2835,10 +3050,33 @@ function onPaletteKey(e) {
   }
 }
 
+function switchSettingsTab(tabId) {
+  const dlg = $('#dlg-settings');
+  if (!dlg) return;
+  const targetId = tabId.endsWith('-section') ? tabId : `${tabId}-section`;
+  const tabs = dlg.querySelectorAll('.settings-tab-btn');
+  const panels = dlg.querySelectorAll('.settings-tab-panel');
+  tabs.forEach(btn => {
+    const isTarget = btn.dataset.tab === targetId;
+    btn.classList.toggle('on', isTarget);
+    btn.setAttribute('aria-selected', isTarget ? 'true' : 'false');
+  });
+  panels.forEach(panel => {
+    const isTarget = panel.id === targetId;
+    panel.classList.toggle('hidden', !isTarget);
+  });
+  const body = dlg.querySelector('.modal-body');
+  if (body) body.scrollTop = 0;
+}
+
 // Scroll an open dialog to one of its sections (used by the MCP shortcut).
 function scrollToSection(sel) {
   const target = $(sel);
   if (!target) return;
+  const panel = target.closest('.settings-tab-panel') || (target.classList.contains('settings-tab-panel') ? target : null);
+  if (panel && panel.id) {
+    switchSettingsTab(panel.id);
+  }
   requestAnimationFrame(() => {
     const body = target.closest('.modal-body') || target.parentElement;
     body.scrollTop = Math.max(0, target.offsetTop - body.offsetTop - 12);
@@ -3446,7 +3684,7 @@ function adminOnly() {
 function applyAdminUi() {
   const admin = !!state.currentUser?.is_admin;
   for (const n of document.querySelectorAll('#settings-form input, #settings-form select, #settings-form textarea, #settings-form button')) {
-    if (n.closest('.modal-head') || n.hasAttribute('data-close') || n.id === 'btn-clear-grants') continue;
+    if (n.closest('.modal-head') || n.closest('.settings-tabs') || n.classList.contains('settings-tab-btn') || n.hasAttribute('data-close') || n.id === 'btn-clear-grants') continue;
     n.disabled = !admin;
   }
   $('#settings-admin-hint')?.classList.toggle('hidden', admin);
@@ -3695,10 +3933,31 @@ function wire() {
   });
 
   // settings
+  document.querySelectorAll('#dlg-settings .settings-tab-btn').forEach(btn => {
+    btn.onclick = () => switchSettingsTab(btn.dataset.tab);
+  });
+  $('#dlg-settings .settings-tabs')?.addEventListener('keydown', (e) => {
+    const tabs = Array.from(document.querySelectorAll('#dlg-settings .settings-tab-btn'));
+    const idx = tabs.findIndex(t => t.classList.contains('on'));
+    if (idx === -1) return;
+    if (e.key === 'ArrowRight' || e.key === 'ArrowDown') {
+      e.preventDefault();
+      const next = tabs[(idx + 1) % tabs.length];
+      next.focus();
+      switchSettingsTab(next.dataset.tab);
+    } else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') {
+      e.preventDefault();
+      const prev = tabs[(idx - 1 + tabs.length) % tabs.length];
+      prev.focus();
+      switchSettingsTab(prev.dataset.tab);
+    }
+  });
+
   $('#btn-open-settings').onclick = async () => {
     await loadSettings();
     await loadMcp();
     applyAdminUi();
+    switchSettingsTab('ai-section');
     openModal('#dlg-settings');
   };
   $('#settings-form').onsubmit = (e) => {
@@ -3793,6 +4052,18 @@ function wire() {
 
   // chat file manager
   $('#btn-files-up').onclick = () => fileBrowser.parent && browseFiles(fileBrowser.parent);
+  $('#btn-files-zip').onclick = () => {
+    if (!state.currentId) return;
+    const p = fileBrowser.path || '';
+    const folderName = p ? (p.split(/[\/\\]/).pop() || 'workspace') : 'workspace';
+    toast('Generating ZIP download…');
+    const a = document.createElement('a');
+    a.href = folderZipUrl(p);
+    a.download = `${folderName}.zip`;
+    document.body.append(a);
+    a.click();
+    a.remove();
+  };
   $('#btn-files-root').onclick = () => browseFiles('');
   $('#btn-files-refresh').onclick = () => browseFiles(fileBrowser.path);
   $('#btn-files-mkdir').onclick = mkdirHere;
@@ -3809,22 +4080,29 @@ function wire() {
     e.target.value = '';
   };
 
+  // restart AI server button in sidebar
+  $('#btn-restart-server')?.addEventListener('click', restartAiServer);
+
   // prompts
-  $('#btn-open-prompts').onclick = () => {
-    renderPromptList();
-    openModal('#dlg-prompts');
-  };
+  if ($('#btn-open-prompts')) {
+    $('#btn-open-prompts').onclick = () => {
+      renderPromptList();
+      openModal('#dlg-prompts');
+    };
+  }
   $('#btn-save-prompt').onclick = savePrompt;
   $('#btn-reset-prompt').onclick = resetPromptForm;
   $('#btn-delete-prompt').onclick = () => editingPromptId && deletePrompt(editingPromptId);
 
   // mcp (managed inside the Settings dialog)
-  $('#btn-open-mcp').onclick = () => {
-    loadSettings();
-    loadMcp();
-    openModal('#dlg-settings');
-    scrollToSection('#mcp-section');
-  };
+  if ($('#btn-open-mcp')) {
+    $('#btn-open-mcp').onclick = () => {
+      loadSettings();
+      loadMcp();
+      openModal('#dlg-settings');
+      scrollToSection('#mcp-section');
+    };
+  }
   // The MCP editor lives inside the settings form, so Enter must not submit it.
   $('#mcp-section').addEventListener('keydown', (e) => {
     if (e.key !== 'Enter' || e.target.tagName === 'TEXTAREA') return;

@@ -1,5 +1,7 @@
 import { Router } from 'express';
 import path from 'node:path';
+import fs from 'node:fs';
+import { spawn } from 'node:child_process';
 import { getAllSettings, getSetting, setSetting } from '../db.js';
 import { listModels, runtimeConfig, REASONING_EFFORTS } from '../services/openai.js';
 import { policySnapshot } from '../services/builtin/policy.js';
@@ -181,6 +183,30 @@ router.get('/models', async (req, res) => {
     res.json({ baseUrl: cfg.baseUrl, models, current: getSetting('model') });
   } catch (e) {
     res.status(502).json({ error: e.message, baseUrl: cfg.baseUrl });
+  }
+});
+
+const DEFAULT_RESTART_SCRIPT = 'C:\\AI\\gufo-build-start.cmd';
+
+// POST /api/settings/restart-ai-server -> starts C:\AI\gufo-build-start.cmd (admin)
+router.post('/restart-ai-server', requireAdmin, (req, res) => {
+  const scriptPath = process.env.RISRIGPT_AI_RESTART_SCRIPT || DEFAULT_RESTART_SCRIPT;
+  if (!fs.existsSync(scriptPath)) {
+    return res.status(404).json({ error: `Restart script not found at ${scriptPath}` });
+  }
+
+  try {
+    const child = spawn('cmd.exe', ['/c', 'start', 'Gufo AI Server', scriptPath], {
+      detached: true,
+      stdio: 'ignore',
+      cwd: path.dirname(scriptPath),
+      windowsHide: false
+    });
+    child.unref();
+
+    res.json({ ok: true, message: `Executed ${path.basename(scriptPath)}` });
+  } catch (e) {
+    res.status(500).json({ error: `Failed to execute restart script: ${e.message}` });
   }
 });
 
