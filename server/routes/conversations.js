@@ -116,7 +116,7 @@ router.get('/', (req, res) => {
         ) AS preview
        FROM conversations c
        WHERE c.user_id = ?
-       ORDER BY datetime(c.updated_at) DESC, c.id DESC`
+       ORDER BY c.pinned DESC, datetime(c.updated_at) DESC, c.id DESC`
     )
     .all(req.user.id);
   res.json(rows.map(withPrompt));
@@ -291,6 +291,12 @@ router.patch('/:id', (req, res) => {
   if (b.reasoning_effort !== undefined) {
     sets.push('reasoning_effort = ?');
     params.push(normalizeEffort(b.reasoning_effort));
+  }
+  // Pinning is not "activity": it must not bump updated_at, or unpinning a
+  // stale chat would drag it to the top of the recent list.
+  if (b.pinned !== undefined) {
+    sets.push('pinned = ?');
+    params.push(b.pinned ? 1 : 0);
   }
   // Changing a tool option should not reshuffle the sidebar, so only a real
   // edit of the chat itself counts as activity.

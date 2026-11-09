@@ -9,6 +9,7 @@ import path from 'node:path';
 import { chatCompletion, consumeChatStream, mcpToolsToOpenAi, unavailableToolResult } from './openai.js';
 import { allTools, callTool } from './mcpManager.js';
 import { isPreApproved, requestApproval, denialResult } from './approvals.js';
+import { getInteractiveTools, handleQuestionTool } from './questions.js';
 import { toolNeedsApproval, runWithConversation, resolvePath, fileRoot } from './builtin/policy.js';
 import { runWithFileChanges } from './fileChanges.js';
 import { maybeCompress, trimMessagesInPlace, generateTitle, pruneToolCallPayload } from './context.js';
@@ -45,6 +46,74 @@ function clampText(s) {
   return s.length > MAX_TOOL_RESULT_CHARS ? `${s.slice(0, MAX_TOOL_RESULT_CHARS)}\n…[truncated]` : s;
 }
 
+/**
+ * Fallback parser for models that emit <tool_call> tags in assistant content
+ * (e.g. Qwen, DeepSeek or local templates running without native tool streaming).
+ */
+function extractRawToolCalls(content) {
+  if (typeof content !== 'string' || !content.includes('<tool_call>')) return null;
+  const toolCalls = [];
+  let remaining = content;
+
+  const toolCallRe = /<tool_call>([\s\S]*?)<\/tool_call>/gi;
+  let match;
+  while ((match = toolCallRe.exec(content)) !== null) {
+    const inner = match[1].trim();
+    let fnName = '';
+    let argsObj = {};
+
+    // Pattern A: <function=Name>\n(?:<parameter=paramName>)?(body)(?:</parameter>)?\n</function>
+    const fnMatch = /<function=([^>]+)>([\s\S]*?)<\/function>/i.exec(inner);
+    if (fnMatch) {
+      fnName = fnMatch[1].trim();
+      const fnBody = fnMatch[2].trim();
+      const paramMatch = /<parameter=([^>]+)>([\s\S]*?)<\/parameter>/i.exec(fnBody);
+      if (paramMatch) {
+        const paramName = paramMatch[1].trim();
+        const paramVal = paramMatch[2].trim();
+        try {
+          argsObj[paramName] = JSON.parse(paramVal);
+        } catch {
+          argsObj[paramName] = paramVal;
+        }
+      } else {
+        try {
+          argsObj = JSON.parse(fnBody);
+        } catch {
+          argsObj = { raw: fnBody };
+        }
+      }
+    } else {
+      // Pattern B: JSON inside <tool_call>
+      try {
+        const parsed = JSON.parse(inner);
+        fnName = parsed.name || parsed.function?.name || '';
+        argsObj = parsed.arguments || parsed.parameters || parsed.function?.arguments || {};
+        if (typeof argsObj === 'string') {
+          try { argsObj = JSON.parse(argsObj); } catch {}
+        }
+      } catch {}
+    }
+
+    if (fnName) {
+      toolCalls.push({
+        id: `call_raw_${Date.now()}_${toolCalls.length}`,
+        type: 'function',
+        function: {
+          name: fnName,
+          arguments: typeof argsObj === 'string' ? argsObj : JSON.stringify(argsObj)
+        }
+      });
+      remaining = remaining.replace(match[0], '').trim();
+    }
+  }
+
+  if (toolCalls.length) {
+    return { toolCalls, cleanedContent: remaining };
+  }
+  return null;
+}
+
 /** The path argument of a producing tool, with the archive defaults applied. */
 function producedPathArg(qualifiedName, args) {
   const key = PRODUCING_TOOLS[qualifiedName];
@@ -78,6 +147,41 @@ function describeProducedFile(qualifiedName, args) {
   } catch {
     return null;
   }
+}
+
+/** Extract an image produced by screenshot tools so multimodal models can see it. */
+function extractToolImage(name, args, resultText) {
+  let imgPath = null;
+  if (name && name.endsWith('__screenshot')) {
+    if (args?.path && typeof args.path === 'string') {
+      try {
+        const p = resolvePath(args.path, { mustExist: false });
+        if (fs.existsSync(p)) imgPath = p;
+      } catch {}
+    }
+    if (!imgPath && typeof resultText === 'string') {
+      try {
+        const parsed = JSON.parse(resultText);
+        if (parsed?.path && fs.existsSync(parsed.path)) imgPath = parsed.path;
+      } catch {}
+      if (!imgPath) {
+        const m = /^(?:Saved [^\n]+\n)([^\n]+\.png)/m.exec(resultText);
+        if (m && fs.existsSync(m[1].trim())) imgPath = m[1].trim();
+      }
+    }
+  }
+  if (imgPath && fs.existsSync(imgPath)) {
+    try {
+      const buf = fs.readFileSync(imgPath);
+      if (buf.length > 0 && buf.length <= 15 * 1024 * 1024) {
+        return {
+          path: imgPath,
+          dataUrl: `data:image/png;base64,${buf.toString('base64')}`
+        };
+      }
+    } catch {}
+  }
+  return null;
 }
 
 // Image extensions the browser can preview inline.
@@ -332,6 +436,15 @@ export function buildMessages(conversationId, { systemPrompt, extraSystem, summa
     if (r.role === 'tool') {
       if (r.tool_call_id && liveIds.has(r.tool_call_id)) {
         msgs.push({ role: 'tool', tool_call_id: r.tool_call_id, content: r.content || '' });
+        if (r.image_url) {
+          msgs.push({
+            role: 'user',
+            content: [
+              { type: 'text', text: '[Screenshot from tool]' },
+              { type: 'image_url', image_url: { url: r.image_url } }
+            ]
+          });
+        }
       }
       continue;
     }
@@ -396,9 +509,19 @@ async function runChatTurnInner({ emit, signal, toolControl, conversation, cfg, 
   // across turns (OpenAI `user` + `prompt_cache_key`; ignored by servers that lack them).
   const cacheKey = `conv-${conversation.id}`;
 
-  const tools = useTools ? allTools(conversation) : [];
-  const toolSchemas = tools.length ? mcpToolsToOpenAi(tools) : undefined;
-  const toolIndex = new Map(tools.map((t) => [t.qualifiedName, t]));
+  const mcpToolList = useTools ? allTools(conversation) : [];
+  const interactiveTools = getInteractiveTools();
+  const allAvailableTools = [...mcpToolList, ...interactiveTools];
+  const toolSchemas = allAvailableTools.length ? [
+    ...(useTools ? mcpToolsToOpenAi(mcpToolList) : []),
+    ...interactiveTools.map((t) => t.schema)
+  ] : undefined;
+  const toolIndex = new Map(allAvailableTools.map((t) => [t.qualifiedName || t.name, t]));
+  const qTool = interactiveTools.find((t) => t.name === 'ask_question') || interactiveTools[0];
+  if (qTool) {
+    toolIndex.set('AskUserQuestion', qTool);
+    toolIndex.set('ask_user_question', qTool);
+  }
   // Infinity (the default) keeps the tool loop running until the model answers.
   const maxRounds = cfg.maxToolRounds ?? Infinity;
 
@@ -507,7 +630,15 @@ async function runChatTurnInner({ emit, signal, toolControl, conversation, cfg, 
     if (assistant.streamError && !(assistant.content || '').trim() && !(assistant.reasoning || '').trim() && !assistant.tool_calls) {
       throw new Error(assistant.streamError);
     }
-    const hasTools = Array.isArray(assistant.tool_calls) && assistant.tool_calls.length > 0;
+    let hasTools = Array.isArray(assistant.tool_calls) && assistant.tool_calls.length > 0;
+    if (!hasTools && assistant.content) {
+      const extracted = extractRawToolCalls(assistant.content);
+      if (extracted) {
+        assistant.tool_calls = extracted.toolCalls;
+        assistant.content = extracted.cleanedContent;
+        hasTools = true;
+      }
+    }
 
     if (!hasTools) {
       finalContent = assistant.content || '';
@@ -588,6 +719,7 @@ async function runChatTurnInner({ emit, signal, toolControl, conversation, cfg, 
       let resultText;
       let denied = null;
       let cancelled = false;
+      let produced = null;
       // Give this specific call its own abort signal so the user can cancel
       // just this tool (the model is then told it was cancelled and continues).
       const callSignal = toolControl?.begin ? toolControl.begin(tc.id) : null;
@@ -595,43 +727,69 @@ async function runChatTurnInner({ emit, signal, toolControl, conversation, cfg, 
         if (parseErr) resultText = `Tool error: invalid JSON arguments (${parseErr.message})`;
         else if (!toolIndex.has(name)) resultText = unavailableToolResult(name);
         else {
-          // Policy gate: mutating tools pause here until the user answers.
           const tool = toolIndex.get(name);
-          if (toolNeedsApproval(tool) && !isPreApproved(conversation.user_id, conversation.id, name)) {
-            const answer = await requestApproval({
-              send: (event, data) => emit(event, data),
-              userId: conversation.user_id,
-              conversationId: conversation.id,
-              qualifiedName: name,
-              args,
-              signal: abortSignal
-            });
-            if (!answer.allowed) denied = answer.reason;
-          }
-          if (!denied) {
-            if (callSignal?.aborted) {
-              cancelled = true;
-              resultText = cancelledToolResult(name);
-            } else {
-              try {
-                resultText = await callTool(name, args, undefined, callSignal);
-                if (callSignal?.aborted) { cancelled = true; resultText = cancelledToolResult(name); }
-                // A successful write leaves a file the user may want to keep.
-                const produced = describeProducedFile(name, args);
-                if (produced) {
-                  producedFiles.push(produced);
-                  roundFiles.push(produced);
-                  addSeg({ t: 'f', i: roundFiles.length - 1 });
-                  emit('file_created', { id: tc.id, ...produced });
-                }
-              } catch (e) {
-                if (e && (e.name === 'AbortError' || callSignal?.aborted)) { cancelled = true; resultText = cancelledToolResult(name); }
-                else resultText = `Tool error: ${e.message}`;
+          const isQuestion = tool?.isInteractiveQuestion || name === 'ask_question' || name === 'AskUserQuestion' || name === 'ask_user_question';
+          if (isQuestion) {
+            try {
+              const qOutcome = await handleQuestionTool({
+                args,
+                toolCallId: tc.id,
+                conversationId: conversation.id,
+                userId: conversation.user_id,
+                send: (event, data) => emit(event, data),
+                signal: callSignal || abortSignal
+              });
+              resultText = typeof qOutcome === 'string' ? qOutcome : qOutcome.text;
+              if (qOutcome?.cancelled || callSignal?.aborted || abortSignal?.aborted) {
+                cancelled = true;
+                resultText = cancelledToolResult(name);
+              }
+            } catch (e) {
+              if (e && (e.name === 'AbortError' || callSignal?.aborted || abortSignal?.aborted)) {
+                cancelled = true;
+                resultText = cancelledToolResult(name);
+              } else {
+                resultText = `Tool error: ${e.message}`;
               }
             }
           } else {
-            resultText = denialResult(name, denied);
-            emit('tool_denied', { id: tc.id, name, reason: denied });
+            // Policy gate: mutating tools pause here until the user answers.
+            if (toolNeedsApproval(tool) && !isPreApproved(conversation.user_id, conversation.id, name)) {
+              const answer = await requestApproval({
+                send: (event, data) => emit(event, data),
+                userId: conversation.user_id,
+                conversationId: conversation.id,
+                qualifiedName: name,
+                args,
+                signal: abortSignal
+              });
+              if (!answer.allowed) denied = answer.reason;
+            }
+            if (!denied) {
+              if (callSignal?.aborted) {
+                cancelled = true;
+                resultText = cancelledToolResult(name);
+              } else {
+                try {
+                  resultText = await callTool(name, args, undefined, callSignal);
+                  if (callSignal?.aborted) { cancelled = true; resultText = cancelledToolResult(name); }
+                  // A successful write leaves a file the user may want to keep.
+                  produced = describeProducedFile(name, args);
+                  if (produced) {
+                    producedFiles.push(produced);
+                    roundFiles.push(produced);
+                    addSeg({ t: 'f', i: roundFiles.length - 1 });
+                    emit('file_created', { id: tc.id, ...produced });
+                  }
+                } catch (e) {
+                  if (e && (e.name === 'AbortError' || callSignal?.aborted)) { cancelled = true; resultText = cancelledToolResult(name); }
+                  else resultText = `Tool error: ${e.message}`;
+                }
+              }
+            } else {
+              resultText = denialResult(name, denied);
+              emit('tool_denied', { id: tc.id, name, reason: denied });
+            }
           }
         }
       } finally {
@@ -639,9 +797,35 @@ async function runChatTurnInner({ emit, signal, toolControl, conversation, cfg, 
       }
       const toolMs = Date.now() - toolStartedAt;
       resultText = clampText(resultText);
-      const toolRow = msgInserter(db).run(conversation.id, 'tool', resultText, null, null, tc.id);
+      const toolImg = extractToolImage(name, args, resultText);
+      if (!produced && toolImg) {
+        try {
+          const st = fs.statSync(toolImg.path);
+          const prod = {
+            path: toolImg.path,
+            name: path.basename(toolImg.path),
+            dir: false,
+            size: st.size,
+            mtime: st.mtime.toISOString()
+          };
+          producedFiles.push(prod);
+          roundFiles.push(prod);
+          addSeg({ t: 'f', i: roundFiles.length - 1 });
+          emit('file_created', { id: tc.id, ...prod });
+        } catch {}
+      }
+      const toolRow = msgInserter(db).run(conversation.id, 'tool', resultText, toolImg?.dataUrl || null, null, tc.id);
       setToolExtras(toolRow.lastInsertRowid, toolMs, cancelled);
       messages.push({ role: 'tool', tool_call_id: tc.id, content: resultText });
+      if (toolImg?.dataUrl) {
+        messages.push({
+          role: 'user',
+          content: [
+            { type: 'text', text: `[Screenshot from ${name}]` },
+            { type: 'image_url', image_url: { url: toolImg.dataUrl } }
+          ]
+        });
+      }
       if (cancelled) emit('tool_cancelled', { id: tc.id, name, duration_ms: toolMs });
       emit('tool_result', { id: tc.id, name, result: resultText, duration_ms: toolMs, cancelled });
     }

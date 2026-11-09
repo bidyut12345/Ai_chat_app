@@ -1,18 +1,17 @@
 @echo off
 rem ============================================================
 rem  Everything, in order:
-rem    1. Strata model server  (C:\AI\Strata, port 8080)
-rem    2. wait until its API answers (the weights take minutes)
-rem    3. RiSriGPT        (port 3000, open on the LAN)
-rem  This is what the boot task runs.
+rem    1. Model server (port 8080)
+rem    2. Wait until its API answers
+rem    3. RiSriGPT (port 3000, open on the LAN)
+rem  Runs on Windows logon in the current user interactive session.
 rem ============================================================
 setlocal
 cd /d "%~dp0"
 if not exist logs mkdir logs
 
-rem Give Windows a moment: at boot the network adapter may still be settling, and
-rem a boot-triggered scheduled task has no random-delay of its own.
-ping -n 21 127.0.0.1 >nul
+rem Brief pause for network adapter and desktop session to initialize
+ping -n 6 127.0.0.1 >nul
 
 call start-model.bat
 if errorlevel 1 goto :model_fail

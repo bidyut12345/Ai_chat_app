@@ -24,14 +24,15 @@ export function estimateTokens(messages) {
   let chars = 0;
   let images = 0;
   for (const m of messages) {
+    let hasImg = !!m.image_url;
     if (typeof m.content === 'string') chars += m.content.length;
     else if (Array.isArray(m.content)) {
       for (const part of m.content) {
         if (part?.type === 'text' && typeof part.text === 'string') chars += part.text.length;
-        else if (part?.type === 'image_url' || m.image_url) images++;
+        else if (part?.type === 'image_url') hasImg = true;
       }
     }
-    if (m.image_url) images++;
+    if (hasImg) images++;
     if (m.tool_calls) chars += JSON.stringify(m.tool_calls).length;
     chars += PER_MESSAGE_OVERHEAD;
   }
@@ -437,9 +438,11 @@ export function trimMessagesInPlace(messages, keepTokens) {
       continue;
     }
     // Over budget. Elide bulky tool-result bodies and bulky assistant content; leave short/structural msgs.
-    if (m.role === 'tool' && typeof m.content === 'string' && m.content.length > TRIMMED_TOOL_NOTE.length) {
-      m.content = TRIMMED_TOOL_NOTE;
-      changed = true;
+    if (m.role === 'tool') {
+      if ((typeof m.content === 'string' && m.content.length > TRIMMED_TOOL_NOTE.length) || Array.isArray(m.content)) {
+        m.content = TRIMMED_TOOL_NOTE;
+        changed = true;
+      }
     } else if (m.role === 'assistant') {
       if (typeof m.content === 'string' && m.content.length > 500) {
         m.content = `${m.content.slice(0, 300)}\n…[earlier assistant explanation trimmed to fit context budget]`;

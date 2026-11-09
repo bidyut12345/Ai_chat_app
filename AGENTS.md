@@ -599,6 +599,256 @@ Verified:
   - `test/context-compress.mjs`: 34 passed, 0 failed.
   - `test/automation.mjs`: 50 passed, 0 failed, 1 skipped.
 
+### 2026-11-09 — run on windows startup with current user for frontend access
+
+> "run on windows startup with current user show that i can access the windows frontend like screen, windows automation and start windows app."
+
+Status: **done**.
+- **Windows Interactive Logon Startup Architecture**:
+  - Previously, `install-autostart.ps1` registered a boot task (`-AtStartup`) with Service-for-User (`-LogonType S4U`), running in isolated **Session 0** where Windows prohibits access to interactive desktop displays, window enumeration, and GUI apps.
+  - Updated `install-autostart.ps1` to default to **user logon** (`-AtLogOn -User "$User"`) with interactive logon (`-LogonType Interactive -RunLevel Highest`).
+  - Automatically captures the calling user (`$env:USERDOMAIN\$env:USERNAME`) before self-elevation so it registers for the active interactive user account.
+  - Added optional `-AtBoot` switch for headless boot mode if ever needed, and `-StartupFolder` switch for shortcut creation.
+  - Created `install-autostart.bat` in root for one-click double-click installation with UAC consent.
+- **Model Server Startup Integration**:
+  - Updated `start-model.bat` to prefer user-tuned `C:\AI\gufo-build-start.cmd` when present, falling back to `gufo.exe serve`.
+  - Updated `start-all.bat` to streamline startup delay from 20s to 5s for fast logon startup.
+- **Frontend & Windows Automation Verification**:
+  - Verified that running in the interactive session grants full access to:
+    1. Screen capture (`windows__screenshot` via System.Drawing / GDI CopyFromScreen).
+    2. Windows desktop automation (`windows__list_windows`, `windows__focus_window`, `windows__window_action`, `windows__send_keys`, `windows__type_text`, `windows__mouse_click`, clipboard).
+    3. Launching Windows desktop GUI applications (`windows__launch_app`, e.g. notepad.exe returning window handle and geometry).
+  - All test suites passing: `test/builtin-tools.mjs` (59 passed), `test/auth.mjs` (38 passed), `test/context-compress.mjs` (34 passed), `test/automation.mjs` (52 passed, 0 skipped).
+
+### 2026-11-09 — remove conv-meta from conv-list
+
+> "remove conv-meta from conv-list. it is not required."
+
+Status: **done**.
+- Removed `conv-meta` subtitle (`N msg · persona · model`) from conversation items rendered in `.conv-list` in `public/app.js`.
+- Removed the unused `.conv-meta` styling rule from `public/styles.css`.
+- Preserved conversation title, generating spinner, active highlight, optional working folder, and delete action.
+
+Verified:
+- `node --check` passed on `public/app.js`.
+- Real headless browser UI verification (`verify-conv-list-ui.mjs`): verified 0 `.conv-meta` elements in DOM across multiple conversations and captured visual screenshot (`sidebar-conv-list-no-meta.png`).
+- All test suites passing: `test/builtin-tools.mjs` (59 passed), `test/auth.mjs` (38 passed), `test/context-compress.mjs` (34 passed), `test/automation.mjs` (51 passed, 1 skipped).
+
+### 2026-11-09 — remove sel-model selector
+
+> "sel-model model selector not needed. it will use th model from setting."
+
+Status: **done**.
+- Removed `#sel-model` dropdown selector from the chat header in `public/index.html`.
+- All chat requests (`sendMessage`, `continueReply`) automatically use the model configured in Settings without sending turn-level model overrides.
+- Cleaned up `#sel-model` handlers and population logic from `public/app.js` while preserving `#model-list` datalist options for the Settings modal.
+- Cleaned up `.model-select` styles and streamlined mobile header layout in `public/styles.css`.
+
+Verified:
+- `node --check` passed on `public/app.js`, `server/index.js`.
+- Real headless browser UI verification (`verify-no-sel-model-ui.mjs`): verified `#sel-model` is absent from the DOM, header buttons are intact, and captured visual screenshot (`header-no-sel-model.png`).
+- All test suites passing: `test/builtin-tools.mjs` (59 passed), `test/auth.mjs` (38 passed), `test/context-compress.mjs` (34 passed), `test/automation.mjs` (52 passed).
+
+### 2026-11-09 — move composer-folder to composer-hint in single row & compact hint row
+
+> "composer-folder move it to composer-hint in single row. compact the hint row."
+
+Status: **done**.
+- Moved `<span id="composer-folder" class="composer-folder hidden" title=""></span>` inside `<div class="composer-hint">` in `public/index.html`, sharing a single flex row with `#hint-tools`, `.ctx-compact-group`, and `#hint-tokens`.
+- Compacted `.composer-hint` in `public/styles.css`:
+  - Reduced top margin from 8px to 4px (mobile 3px).
+  - Tighter horizontal gap: 8px (mobile 6px).
+  - Compact typography: font-size 11px, line-height 1.35.
+- Styled `.composer-folder` as an `inline-flex` compact pill:
+  - Height 19px, padding 1px 7px, border-radius 999px, font-size 11px, line-height 1.
+  - Zero margin so it aligns directly with the other hint items.
+  - `max-width: min(220px, 35vw)` with text ellipsis to prevent long folder names from overflowing the single row.
+- Compacted `.ctx-compact-level` and `.ctx-compact-btn` to 19px height with 10.5px font size to align perfectly with the folder pill.
+- Total row height is now ~19px, cleanly aligned on the same horizontal baseline (diffY ~2px).
+
+Verified:
+- `node --check` on `server/index.js` and `public/app.js`.
+- Test suites: `test/builtin-tools.mjs` (59 passed), `test/auth.mjs` (38 passed), `test/context-compress.mjs` (34 passed), `test/automation.mjs` (52 passed).
+- Real headless browser verification (`verify-composer-hint-ui.mjs`): verified nesting inside `.composer-hint`, single-row layout (`hintHeight: 19px`, `diffY <= 2.1px`), and captured screenshot (`composer-hint-single-row.png`).
+
+### 2026-11-09 — fix GUI-automation reliability and schtasks server start
+
+> "fix the issues. the server is started using schtasks. if it is the problem fix it." (referencing GUI-AGENT-FIX-PROMPT.md)
+
+Status: **done**.
+- **Windows automation & desktop station (`windowsServer.js`, `win32.js`, `winlib.ps1`)**:
+  - `SafeOpenDefaultDesktop()` and `SetThreadDesktop(hDesk)` in STA threads bridge processes started via `schtasks` or background workers to the interactive `WinSta0\Default` desktop. Fixed `CheckDirtyWindow`, `ListWindows`, `ForceForeground`, and `InspectUia` so USER32/UIA APIs (`GetWindowThreadProcessId`, `EnumWindows`, `FromHandle`) never fail with error 0 or "Idle" process.
+  - `launch_app` resolves modern Windows 11 UWP packaged apps (Notepad, Calculator), trims protocol suffixes (`calculator:`), filters out WinUI `PopupHost` / `PopupWindowSiteBridge` HWNDs, tracks launcher stubs without premature exit aborts, detects reused instances (`reused_existing_instance: true`), and supports `new_instance: true`.
+  - Handle hygiene & stale handle rejection: `Resolve-Handle` verifies handle existence and title on default desktop, failing closed with `{ error: 'stale_handle', candidates: [...] }` if stale or closed.
+  - Unsaved document protection: `Focus-Target` and `CheckDirtyWindow` inspect window titles (`*`, bullet), tab items (`Modified` vs `Unmodified`), and document edit content. Rejects typing/keystrokes without `allow_unsaved: true` with `{ error: 'unsaved_changes' }`.
+  - Native UIA patterns & button invocation: `uia_inspect` reads control names, bounding rects, and values via `ValuePattern` / `TextPattern` directly without PowerShell CLI overhead; `send_keys` leverages native `InvokePattern` on Calculator buttons (`num4Button`, `plusButton`, `num3Button`, `equalButton`), `ValuePattern` / `FocusDocument` for text edits, and `SendKeySequence` fallback via `VkKeyScan`/`keybd_event` to bypass UIPI `SendInput` blocks.
+  - `screenshot` returns honest metadata `{ path, width, height, readable: false, hint }` and supports optional coordinate grid annotation (`annotate: true`).
+- **Files server (`filesServer.js`)**:
+  - `verifyWrite` verifies all writes on disk by reading back length and checking SHA-256 (up to 2 retries). Returns `{ bytes_written, sha256, verified: true }`.
+  - Rejects truncation placeholders matching `/^\/\*\s*Content elided from history:\s*\d+\s*characters?\s*\*\/$/i` with explicit error.
+  - Syntax check on `edit_file`: validates syntax via Node `vm.Script` for JS, JSON parsing, and delimiter balance checks for code/brackets before saving.
+- **Shell server (`shellServer.js`)**:
+  - Added `interpreter` parameter. When `interpreter: "powershell"`, writes script to temporary `.ps1` file and executes with `-ExecutionPolicy Bypass -File`, completely bypassing cmd quoting mangling for `$vars`, backticks, and nested quotes.
+  - Echoed command detection returns `{ error: "command_not_executed" }`.
+  - Timeout protection: long-running commands exceeding `timeout_seconds` terminate cleanly and return partial output with `{ timed_out: true, stdout, stderr }` rather than transport errors.
+- **Verification**:
+  - `node test/gui-agent-fix.mjs`: **13 passed, 0 failed** (all acceptance criteria 1–7 verified: Notepad launch + reused + dirty tab lock; stale handle candidate list; 50/50 verified SHA-256 writes + placeholder rejection + syntax check; Calculator 4+3=7 with UIA verification and 0 shell calls; PowerShell quoting and variables; timeout with timed_out: true).
+  - `node test/automation.mjs`: **55 passed, 0 failed, 0 skipped**.
+  - `node test/builtin-tools.mjs`: **59 passed, 0 failed**.
+  - `node test/auth.mjs`: **38 passed, 0 failed**.
+  - `node test/context-compress.mjs`: **34 passed, 0 failed**.
+  - `node --check` syntax check clean across all files.
+
+### 2026-11-09 — support vision/image input for screenshot tool outputs
+
+> "I asked to take a screenshot, and it did but it said it can read the image whereas the model has image capability.
+>
+> Explanation of the Desktop State
+> Your screenshot is saved on disk, but since I can't see the image itself, here's what's actually on your desktop based on UI Automation — and it's a busy one! 🖥️"
+
+Status: **done**.
+- **Screenshot metadata & visibility (`windowsServer.js`)**:
+  - Removed misleading disclaimers (`"readable": false`, `"hint": "PNG is not visible to the model..."`, and `Note: PNG is not visible to the model...`) from `windows__screenshot` tool response.
+  - Set `readable: true` so multimodal models know the image is captured and available.
+- **Vision multimodal tool results pipeline (`chatService.js`, `openai.js`, `context.js`)**:
+  - Added `extractToolImage(name, args, resultText)` in `chatService.js` to extract screenshot file paths produced by `windows__screenshot`, `chrome__screenshot`, and `edge__screenshot`.
+  - Reads the screenshot PNG and converts to a base64 data URI (`data:image/png;base64,...`).
+  - Persists `dataUrl` in the `image_url` column of the `messages` table for `role: 'tool'` records.
+  - Emits `file_created` so the screenshot preview chip renders in the UI turn alongside tool calls.
+  - Passes the image to the model via standard multimodal tool result content parts:
+    `content: [{ type: 'text', text: resultText }, { type: 'image_url', image_url: { url: dataUrl } }]`.
+  - `buildMessages` reconstructs tool messages with their `image_url` parts for subsequent conversation turns.
+  - `openai.js` handles upstream server compatibility: if an OpenAI-compatible server returns 400 rejecting array content in `role: 'tool'`, it automatically retries with flattened text content.
+  - `context.js` `estimateTokens` and `trimMessagesInPlace` accurately track image tokens and trim old tool images when over context budget.
+- **Verification**:
+  - `node --check` passed across all modified server files.
+  - `test/builtin-tools.mjs`: **59 passed, 0 failed**.
+  - `test/automation.mjs`: **55 passed, 0 failed, 0 skipped**.
+  - `test/gui-agent-fix.mjs`: **13 passed, 0 failed**.
+  - `test/auth.mjs`: **38 passed, 0 failed**.
+  - `test/context-compress.mjs`: **34 passed, 0 failed**.
+
+### 2026-11-09 — fix Qwen stable prefix is not a token boundary on screenshot analysis
+
+> "Generation failed: Upstream error 500: Qwen stable prefix is not a token boundary
+> enabled only the windows automation mcp tool. all others are disabled
+> getting this when i ask it to \"screenshot of whole desktop and explain\""
+
+Status: **done**.
+- **Root cause in upstream Qwen vision model & `gufo.exe`**:
+  - In `gufo.exe` (and standard Qwen vision chat templates), when image content parts (`{ type: "image_url", ... }`) were placed directly in `role: 'tool'` messages, `stable_prefix_bytes` is computed before the tool message (after the assistant tool_calls turn).
+  - When multimodal tokens were encoded for the suffix following `stable_prefix_bytes`, token boundary alignment failed: `std::logic_error("Qwen stable prefix is not a token boundary")`, returning HTTP 500.
+- **Multimodal handoff via user message (`chatService.js`, `context.js`)**:
+  - Maintained `role: 'tool'` as pure text (`content: resultText`) so chat template tool message boundaries remain clean across all LLM inference engines.
+  - When a tool produces a screenshot image (`extractToolImage`), appended an immediate follow-up `role: 'user'` message with content parts:
+    `[{ type: 'text', text: '[Screenshot from <tool_name>]' }, { type: 'image_url', image_url: { url: dataUrl } }]`.
+  - In `buildMessages()`, reconstructed screenshot turns using the clean `role: 'tool'` + follow-up `role: 'user'` image part, ensuring context reloads and multi-turn continuations preserve full vision capability without template boundary errors.
+  - Tested directly against the local `gufo.exe` Qwen vision server: `role: 'tool'` with `image_url` threw 500 `Qwen stable prefix is not a token boundary`, while the follow-up `role: 'user'` with `image_url` succeeded with 200 OK and generated rich, accurate visual descriptions of the screenshot.
+- **Verification**:
+  - `node --check` syntax check clean across all files.
+  - `test/builtin-tools.mjs`: **59 passed, 0 failed**.
+  - `test/automation.mjs`: **55 passed, 0 failed, 0 skipped**.
+  - `test/gui-agent-fix.mjs`: **13 passed, 0 failed**.
+  - `test/auth.mjs`: **38 passed, 0 failed**.
+  - `test/context-compress.mjs`: **34 passed, 0 failed**.
+
+### 2026-11-09 — interactive ask_question tool available even when MCP is disabled
+
+> "ask question not working. it should be there even if mcp is disabled."
+
+Status: **done**.
+- **Interactive Question Tool (`server/services/questions.js`, `server/routes/questions.js`)**:
+  - Implemented interactive question capability supporting standard `ask_question`, PascalCase alias `AskUserQuestion` (used by Qwen models), and `ask_user_question`.
+  - Normalizes questions input supporting `questions` array, single `question` string, option items with `label`/`description` or plain strings, `multiSelect` and `is_multi_select`.
+  - Question manager registers pending questions with unique IDs, 15-minute timeout, cancellation tracking, and broadcast support over SSE (`question_prompt`, `question_resolved`).
+  - Added REST endpoints: `GET /api/questions/pending`, `POST /api/questions/:id/answer`, `POST /api/questions/:id/cancel`, `GET /api/questions/stream`.
+- **Always Available Even When MCP Is Disabled (`chatService.js`)**:
+  - In `chatService.js`, decoupled interactive question tools from external MCP server policy.
+  - When MCP tools are toggled off (`use_tools: false` or all MCP servers switched off in Settings), `body.tools` still provides `ask_question` and `AskUserQuestion` to the upstream model.
+  - When MCP tools are toggled on, both MCP tools and question tools are passed together.
+- **Local Model Raw `<tool_call>` Fallback Parser (`chatService.js`)**:
+  - Added regex fallback `extractRawToolCalls` so local models (Qwen, DeepSeek, Ollama, etc.) that emit text-based `<tool_call><function=AskUserQuestion>...</tool_call>` tags have them parsed, stripped from visible content, and executed as tool calls.
+- **Client UI (`public/app.js`, `public/index.html`, `public/styles.css`)**:
+  - Added `#question-prompts` container above composer, displaying `.question-card` with assistant badge, category headers, touch-friendly option selection buttons (single-select radio indicator or multi-select checkbox indicator), custom text input, and Submit / Skip buttons.
+  - Resilient state: pending questions persist and reload across conversation switches or browser refreshes via `loadPendingQuestions`.
+  - Toolchip shows `💬` icon, status "waiting for answer…", and formats user response as tool output upon submission.
+- **Verification**:
+  - Syntax check clean: `node --check` across all files.
+  - New test suite `test/ask-question.mjs`: **16 passed, 0 failed**.
+  - `test/builtin-tools.mjs`: **59 passed, 0 failed**.
+  - `test/auth.mjs`: **38 passed, 0 failed**.
+  - `test/context-compress.mjs`: **34 passed, 0 failed**.
+  - `test/automation.mjs`: **55 passed, 0 failed, 0 skipped**.
+  - `test/gui-agent-fix.mjs`: **13 passed, 0 failed**.
+
+### 2026-11-09 — question dialog / UI popup for ask_question
+
+> "the model call the ask question tool, but the question dialog does not showup. it should not be like normal tool call, instead a dialog or a ui of the question so that i can choose the option or write my own answer."
+
+Status: **done**.
+- **Question Dialog Popup (`#dlg-question` in `public/index.html`, `public/styles.css`, `public/app.js`)**:
+  - Added dedicated `<dialog id="dlg-question" class="modal question-modal">` that automatically opens via `.showModal()` whenever `question_prompt` arrives (or when reloaded via `loadPendingQuestions`).
+  - Displays header with category tag, clear question body, interactive option selection cards (with radio or checkbox indicators), and a custom input field ("Or write your own answer / details…").
+  - "Submit Answer" button dynamically enables when an option is picked or text is entered; pressing Enter in the input submits directly; "Skip" button skips cleanly.
+- **Replaced Generic Tool Chip with Chat Question Card**:
+  - `buildToolChip()` intercepts `ask_question`, `AskUserQuestion`, and `ask_user_question`, rendering a dedicated `.chat-question-card` instead of an expandable code/JSON toolchip.
+  - Shows assistant question, option pill tags, a "💬 Answer Question" button to reopen the dialog at any time, and dynamically updates to "✓ Answer: [selection]" upon submission.
+- **Verification**:
+  - `node --check` syntax check clean on all files.
+  - `test/ask-question.mjs`: **16 passed, 0 failed**.
+  - `test/builtin-tools.mjs`: **59 passed, 0 failed**.
+  - `test/auth.mjs`: **38 passed, 0 failed**.
+  - `test/context-compress.mjs`: **34 passed, 0 failed**.
+  - `test/automation.mjs`: **55 passed, 0 failed, 0 skipped**.
+  - `test/gui-agent-fix.mjs`: **13 passed, 0 failed**.
+
+### 2026-11-10 — fix multiple question boxes, display answer, and fix skip button
+
+> "the UI show mutliple tool call box for a single question. and after answering it does not show my answer. i am slo not ato skip in dialog."
+
+Status: **done**.
+- **Fix Multiple Tool Call Boxes**:
+  - Removed duplicate `#question-prompts` container above composer so only the clean modal dialog and the in-chat question card are used.
+  - Assigned class `tool-chip chat-question-card` to question widgets and updated `findChip()` to search `.tool-chip, .chat-question-card`.
+  - On `tool_call`, updated existing widget in place (`updateChatQuestionWidget()`) instead of appending a duplicate chip.
+- **Display User Answer Prominently**:
+  - Added clean answer extractor (`formatCleanAnswer`) and dedicated `.cqc-result` display (`✓ Your Answer: <selection>`).
+  - Upon submitting in the dialog, immediately paints the user's selected choice or custom text into the in-chat card.
+  - On conversation reload, parses persisted tool message and displays `✓ Your Answer: <selection>` prominently.
+- **Fix Skip / Dismiss in Dialog**:
+  - In `server/services/questions.js`, updated `resolveQuestion` and `cancelQuestion` to look up by question `id` OR `toolCallId`, eliminating 404 errors when called with `call_*` IDs.
+  - Wired `skipBtn.onclick`, `closeBtn.onclick`, and `dialog.oncancel` (Esc key) to cleanly cancel the question on the server and dismiss the modal.
+  - In `chatService.js`, records `cancelled: true` so the model receives acknowledgement and continues cleanly.
+- **Verification**:
+  - `node --check` syntax check clean on all files.
+  - `test/ask-question.mjs`: **16 passed, 0 failed**.
+  - `test/builtin-tools.mjs`: **59 passed, 0 failed**.
+  - `test/auth.mjs`: **38 passed, 0 failed**.
+  - `test/context-compress.mjs`: **34 passed, 0 failed**.
+
+### 2026-11-10 — do not show question box while question is being generated
+
+> "💬
+> Question from Assistant
+> generating… 1 chars
+> The assistant has a question for you:
+> 💬 Answer Question
+> Skip
+> 
+> Do not show this while question is being generated ."
+
+Status: **done**.
+- **Suppress Incomplete Question Box During Generation**:
+  - In `handleRunEvent()`, added an explicit check on `event === 'tool_generating'` to ignore interactive question tools (`isQuestionTool(d.name)`).
+  - No dummy chip, placeholder text, character counters, or premature "Answer Question" / "Skip" buttons are rendered while the tool call arguments are streaming.
+  - The clean `.chat-question-card` is rendered only on `tool_call` when the arguments have completely finished streaming, the full question text and options are ready, and `#dlg-question` opens.
+- **Verification**:
+  - `node --check` syntax check clean on all files.
+  - `test/ask-question.mjs`: **16 passed, 0 failed**.
+  - `test/builtin-tools.mjs`: **59 passed, 0 failed**.
+  - `test/auth.mjs`: **38 passed, 0 failed**.
+  - `test/context-compress.mjs`: **34 passed, 0 failed**.
+
 ### Earlier requests (from the session summary; exact wording not retained)
 
 - Full visual polish pass on the UI (theme tokens, sidebar, header, messages,

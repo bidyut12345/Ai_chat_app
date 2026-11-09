@@ -38,31 +38,33 @@ DB_PATH=/some/where/app.db npm start
 
 Requires Node.js 22+ (global `fetch`, and the `better-sqlite3` prebuilds).
 
-### Start everything at boot (Windows)
+### Start automatically on Windows (Current User or Boot)
 
 | File | What it does |
 | --- | --- |
-| `start-model.bat` | Runs `C:\AI\gufo-build\gufo.exe serve` (qwen3.8-flash-next-unsloth-q4-k-xl) — skipped if something already listens on 8080. |
-| `start-server.bat` | Starts the chat app on **`0.0.0.0:3000`** (LAN visible) **as administrator** (self-elevates with one UAC prompt; skipped when already elevated, e.g. from the boot task), logging to `logs\server.log`. Does nothing if 3000 is already up. |
+| `start-model.bat` | Runs `C:\AI\gufo-build-start.cmd` (or `gufo.exe serve`) — skipped if something already listens on 8080. |
+| `start-server.bat` | Starts the chat app on **`0.0.0.0:3000`** (LAN visible) **as administrator** (self-elevates with one UAC prompt; skipped when already elevated, e.g. from the scheduled task), logging to `logs\server.log`. Does nothing if 3000 is already up. |
 | `start-all.bat` | The full order: model → wait until `GET /v1/models` answers (up to 30 min while the weights load) → chat app. |
-| `start-all-hidden.vbs` | Same, with no window at all. This is what the boot task runs. |
+| `start-all-hidden.vbs` | Same, with no window at all. This is what the startup task runs. |
 | `stop-server.bat` | Stops whatever is listening on port 3000. |
 | `install-autostart.ps1` | One-shot setup: firewall rules, LAN binding, Scheduled Task. |
 
 ```powershell
 .\install-autostart.ps1              # one UAC prompt, then:
                                      #  - firewall: allow inbound TCP 3000 + 8080
-                                     #  - model config: "host": "0.0.0.0" (backs up the .json)
-                                     #  - Scheduled Task "RiSriGPT" at every boot, before logon
+                                     #  - Scheduled Task "RiSriGPT" on Windows logon for current user
+                                     #    (interactive session: screen capture, windows automation & app launch enabled)
+.\install-autostart.ps1 -AtBoot      # runs at machine boot in Session 0 before logon
 .\install-autostart.ps1 -Remove      # removes the task and the firewall rules
 .\install-autostart.ps1 -LocalOnly   # autostart only, keep both servers on 127.0.0.1
 ```
 
-The task is registered with an **AtStartup** trigger and `S4U` logon, so it runs
-when the machine boots, whether or not anyone logs in (`start-all.bat` waits 20 s
-first so the network has settled). Watch it with
-`Get-ScheduledTaskInfo "RiSriGPT"` and start it by hand with
-`Start-ScheduledTask -TaskName "RiSriGPT"`.
+By default, the task is registered with an **AtLogOn** trigger for the current user and `Interactive` logon, so it runs inside your interactive Windows desktop session. This gives the app full access to the Windows frontend:
+- **Screen capture** (`windows__screenshot`)
+- **Windows automation** (`windows__list_windows`, `windows__focus_window`, `windows__window_action`, `windows__send_keys`, `windows__type_text`, `windows__mouse_click`)
+- **Launching desktop GUI applications** (`windows__launch_app`)
+
+Watch it with `Get-ScheduledTask "RiSriGPT"` and start it by hand with `Start-ScheduledTask -TaskName "RiSriGPT"`.
 
 > The **model** server only re-reads `"host": "0.0.0.0"` when it is next launched, so a
 > model that was already running keeps listening on `127.0.0.1:8080` until you restart it.

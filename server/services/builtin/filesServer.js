@@ -8,6 +8,8 @@
 import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
+import crypto from 'node:crypto';
+import vm from 'node:vm';
 import { resolvePath, PolicyError } from './policy.js';
 import { trackFile } from '../fileChanges.js';
 import {
@@ -58,6 +60,111 @@ async function* walk(dir, recursive) {
     if (recursive && e.isDirectory() && !IGNORED_DIRS.has(e.name)) {
       yield* walk(full, true);
     }
+  }
+}
+
+const PLACEHOLDER_RE = /^\/\*\s*Content elided from history:\s*\d+\s*characters?\s*\*\/$/i;
+
+function sha256Hex(data) {
+  return crypto.createHash('sha256').update(data).digest('hex');
+}
+
+async function verifyWrite(filePath, expectedContent) {
+  const expectedBuf = Buffer.from(expectedContent, 'utf8');
+  const expectedSha = sha256Hex(expectedBuf);
+
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const readBuf = await fsp.readFile(filePath);
+      const readSha = sha256Hex(readBuf);
+      if (readBuf.length === expectedBuf.length && readSha === expectedSha) {
+        return { bytes_written: expectedBuf.length, sha256: readSha, verified: true };
+      }
+    } catch {}
+    await fsp.writeFile(filePath, expectedContent, 'utf8');
+  }
+
+  const actualBuf = await fsp.readFile(filePath);
+  const actualSha = sha256Hex(actualBuf);
+  if (actualBuf.length === expectedBuf.length && actualSha === expectedSha) {
+    return { bytes_written: expectedBuf.length, sha256: actualSha, verified: true };
+  }
+  return {
+    ok: false,
+    error: 'write_verification_failed',
+    expected_len: expectedBuf.length,
+    actual_len: actualBuf.length,
+    actual_sha: actualSha
+  };
+}
+
+function checkDelimiters(content) {
+  const stack = [];
+  const pairs = { ')': '(', ']': '[', '}': '{' };
+  let inSingle = false;
+  let inDouble = false;
+  let inBacktick = false;
+  let inLineComment = false;
+  let inBlockComment = false;
+
+  for (let i = 0; i < content.length; i++) {
+    const c = content[i];
+    const next = content[i + 1];
+
+    if (inLineComment) {
+      if (c === '\n') inLineComment = false;
+      continue;
+    }
+    if (inBlockComment) {
+      if (c === '*' && next === '/') { inBlockComment = false; i++; }
+      continue;
+    }
+    if (c === '/' && next === '/' && !inSingle && !inDouble && !inBacktick) {
+      inLineComment = true; i++; continue;
+    }
+    if (c === '/' && next === '*' && !inSingle && !inDouble && !inBacktick) {
+      inBlockComment = true; i++; continue;
+    }
+    if (c === "'" && !inDouble && !inBacktick && content[i - 1] !== '\\') {
+      inSingle = !inSingle; continue;
+    }
+    if (c === '"' && !inSingle && !inBacktick && content[i - 1] !== '\\') {
+      inDouble = !inDouble; continue;
+    }
+    if (c === '`' && !inSingle && !inDouble && content[i - 1] !== '\\') {
+      inBacktick = !inBacktick; continue;
+    }
+    if (inSingle || inDouble || inBacktick) continue;
+
+    if (c === '(' || c === '[' || c === '{') {
+      stack.push(c);
+    } else if (c === ')' || c === ']' || c === '}') {
+      if (!stack.length || stack.pop() !== pairs[c]) {
+        throw new Error(`Unbalanced delimiter "${c}" at character ${i}`);
+      }
+    }
+  }
+  if (stack.length) {
+    throw new Error(`Unbalanced opening delimiter "${stack[stack.length - 1]}"`);
+  }
+}
+
+function verifySyntax(filePath, content) {
+  const ext = path.extname(filePath).toLowerCase();
+  if (ext === '.json') {
+    try {
+      JSON.parse(content);
+    } catch (e) {
+      throw new Error(`Invalid JSON: ${e.message}`);
+    }
+  } else if (ext === '.js' || ext === '.mjs' || ext === '.cjs') {
+    try {
+      new vm.Script(content);
+    } catch (e) {
+      throw new Error(`JavaScript syntax error: ${e.message}`);
+    }
+  } else if (ext === '.ts' || ext === '.tsx' || ext === '.jsx' || ext === '.ps1' || ext === '.py') {
+    checkDelimiters(content);
   }
 }
 
@@ -151,12 +258,24 @@ export const fileTools = [
     async handler(args) {
       const file = resolvePath(str(args.path));
       const content = typeof args.content === 'string' ? args.content : '';
+      if (PLACEHOLDER_RE.test(content.trim())) {
+        throw new PolicyError('Refusing to write truncation placeholder: content elided from history');
+      }
+
       return trackFile(file, async () => {
         await fsp.mkdir(path.dirname(file), { recursive: true });
-        await fsp.appendFile(file, args.append ? content : '', 'utf8');
-        if (args.append) return `Appended ${fmtBytes(Buffer.byteLength(content))} to ${file}`;
-        await fsp.writeFile(file, content, 'utf8');
-        return `Wrote ${fmtBytes(Buffer.byteLength(content))} to ${file}`;
+        let expected = content;
+        if (args.append && fs.existsSync(file)) {
+          const prior = await fsp.readFile(file, 'utf8');
+          expected = prior + content;
+        }
+        await fsp.writeFile(file, expected, 'utf8');
+        const v = await verifyWrite(file, expected);
+        if (v.ok === false) {
+          throw new PolicyError(`write_verification_failed: expected ${v.expected_len} B, got ${v.actual_len} B (sha ${v.actual_sha})`);
+        }
+        const action = args.append ? 'Appended to' : 'Wrote';
+        return `${action} ${fmtBytes(Buffer.byteLength(content))} to ${file} (sha256: ${v.sha256.slice(0, 12)}... verified)`;
       });
     }
   },
@@ -180,6 +299,9 @@ export const fileTools = [
       const target = typeof args.target === 'string' ? args.target : '';
       if (!target) throw new PolicyError('target snippet cannot be empty');
       const replacement = typeof args.replacement === 'string' ? args.replacement : '';
+      if (PLACEHOLDER_RE.test(replacement.trim())) {
+        throw new PolicyError('Refusing to write truncation placeholder: content elided from history');
+      }
       const text = await fsp.readFile(file, 'utf8');
       if (!text.includes(target)) {
         throw new PolicyError(`Target snippet not found in ${file}. Make sure the target text matches the file content exactly.`);
@@ -189,9 +311,20 @@ export const fileTools = [
         throw new PolicyError(`Target snippet occurs ${count} times in ${file}. Provide more surrounding context to match uniquely, or set allow_multiple: true.`);
       }
       const updated = args.allow_multiple ? text.replaceAll(target, replacement) : text.replace(target, replacement);
+
+      try {
+        verifySyntax(file, updated);
+      } catch (err) {
+        throw new PolicyError(`Edit produced syntax error in ${path.basename(file)}: ${err.message}`);
+      }
+
       return trackFile(file, async () => {
         await fsp.writeFile(file, updated, 'utf8');
-        return `Successfully replaced ${count} occurrence(s) in ${file}`;
+        const v = await verifyWrite(file, updated);
+        if (v.ok === false) {
+          throw new PolicyError(`write_verification_failed: expected ${v.expected_len} B, got ${v.actual_len} B (sha ${v.actual_sha})`);
+        }
+        return `Successfully replaced ${count} occurrence(s) in ${file} (sha256: ${v.sha256.slice(0, 12)}... verified)`;
       });
     }
   },

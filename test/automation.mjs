@@ -121,7 +121,7 @@ async function main() {
 
   console.log('\nBuilt-in automation servers are registered');
   for (const [name, count] of [
-    ['windows', 11],
+    ['windows', 13],
     ['chrome', 11],
     ['edge', 11]
   ]) {
@@ -200,7 +200,18 @@ async function main() {
     }
 
     const stale = await callTool(windows, 'type_text', { handle: 123456789, text: 'must not be typed' });
-    check('a stale window handle is refused, not typed into another window', /No window with handle/.test(textOf(stale)), textOf(stale));
+    check('a stale window handle is refused, not typed into another window', /stale_handle|No window with handle/.test(textOf(stale)), textOf(stale));
+
+    const foundWindows = await callTool(windows, 'find_window', {});
+    let parsedWindows = null;
+    try { parsedWindows = typeof foundWindows.data?.result === 'string' ? JSON.parse(foundWindows.data.result) : foundWindows.data?.result; } catch {}
+    check('find_window returns open windows', foundWindows.ok && Array.isArray(parsedWindows?.windows || parsedWindows), textOf(foundWindows));
+
+    const dryRun = await callTool(windows, 'type_text', { title: 'no such window 12345', text: 'hello', dry_run: true });
+    check('dry_run rejects non-existent window cleanly', /no_such_window|No window matching/i.test(textOf(dryRun)), textOf(dryRun));
+
+    const uiaStale = await callTool(windows, 'uia_inspect', { handle: 123456789 });
+    check('uia_inspect on stale handle returns stale_handle', /stale_handle|No window with handle/.test(textOf(uiaStale)), textOf(uiaStale));
 
     const noTarget = await callTool(windows, 'window_action', { action: 'minimize' });
     check('window_action without a target is rejected', /Give a window handle or a title/.test(textOf(noTarget)), textOf(noTarget));

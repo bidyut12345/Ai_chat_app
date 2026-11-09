@@ -690,13 +690,13 @@ select:focus-visible,
 .conv-list {
   flex: 1;
   overflow-y: auto;
-  padding: 2px 8px 8px;
+  padding: 2px 2px 2px;
   min-height: 0;
 }
 
 .conv-item {
   position: relative;
-  padding: 8px 30px 8px 10px;
+  padding: 2px 10px 6px 4px;
   border-radius: 10px;
   cursor: pointer;
   margin-bottom: 2px;
@@ -742,15 +742,6 @@ select:focus-visible,
   animation: app-spin .8s linear infinite;
 }
 
-.conv-meta {
-  font-size: 11.5px;
-  color: var(--dimmer);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  margin-top: 2px;
-}
-
 .conv-path {
   font-size: 11px;
   color: var(--dimmer);
@@ -779,6 +770,37 @@ select:focus-visible,
 
 .conv-item:hover .conv-del {
   opacity: 1;
+}
+
+/* Pin button: sits just left of the delete button, revealed on hover —
+   except when pinned, where the marker stays visible. */
+.conv-pin {
+  position: absolute;
+  right: 32px;
+  top: 50%;
+  transform: translateY(-50%);
+  background: none;
+  border: 0;
+  color: var(--dimmer);
+  cursor: pointer;
+  opacity: 0;
+  padding: 4px 6px;
+  border-radius: 6px;
+  font-size: 13px;
+}
+
+.conv-item:hover .conv-pin {
+  opacity: 1;
+}
+
+.conv-pin:hover {
+  color: var(--text);
+  background: var(--hover);
+}
+
+.conv-pin.on {
+  opacity: 1;
+  color: var(--accent);
 }
 
 .conv-del:hover {
@@ -905,12 +927,11 @@ select:focus-visible,
   text-overflow: ellipsis;
 }
 
-/* The AI-title, export and model controls share one look, one height and one
-   baseline: all three are direct children of the header, so `align-items:
+/* The AI-title, files and export controls share one look, one height and one
+   baseline: all are direct children of the header, so `align-items:
    center` puts their text on the same line. */
 .ai-title-btn,
-.header-btn,
-.model-select {
+.header-btn {
   flex: 0 0 auto;
   display: inline-flex;
   align-items: center;
@@ -953,8 +974,7 @@ select:focus-visible,
 }
 
 .ai-title-btn:hover:not(:disabled),
-.header-btn:hover:not(:disabled),
-.model-select:hover {
+.header-btn:hover:not(:disabled) {
   background: var(--hover);
   border-color: var(--border);
   color: var(--text);
@@ -965,18 +985,7 @@ select:focus-visible,
   cursor: default;
 }
 
-.model-select {
-  max-width: 190px;
-  padding: 0 6px 0 10px;
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--text);
-}
 
-.model-select option {
-  background: var(--bg-side);
-  color: var(--text);
-}
 
 /* ───────────── Messages ───────────── */
 .messages-wrap {
@@ -1920,7 +1929,7 @@ select:focus-visible,
 .ctx-compact-group {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: 3px;
 }
 
 .ctx-compact-level {
@@ -1928,9 +1937,11 @@ select:focus-visible,
   background: transparent;
   color: var(--dim);
   border-radius: 999px;
-  padding: 1px 4px;
-  font-size: 11px;
-  line-height: 1.5;
+  padding: 0 4px;
+  height: 19px;
+  box-sizing: border-box;
+  font-size: 10.5px;
+  line-height: 1;
   cursor: pointer;
 }
 
@@ -1944,9 +1955,11 @@ select:focus-visible,
   background: transparent;
   color: var(--dim);
   border-radius: 999px;
-  padding: 1px 8px;
-  font-size: 11px;
-  line-height: 1.5;
+  padding: 0 7px;
+  height: 19px;
+  box-sizing: border-box;
+  font-size: 10.5px;
+  line-height: 1;
   cursor: pointer;
   white-space: nowrap;
 }
@@ -1993,7 +2006,7 @@ select:focus-visible,
 .composer-hint #hint-tokens {
   display: inline-flex;
   align-items: center;
-  gap: 10px;
+  gap: 6px;
   flex-wrap: wrap;
 }
 
@@ -2268,6 +2281,318 @@ select:focus-visible,
   flex-wrap: wrap;
 }
 
+/* ───────────── Question Modal Dialog ───────────── */
+.question-modal {
+  width: 90vw;
+  max-width: 580px;
+  border-radius: 18px;
+  border: 1px solid var(--border);
+  background: var(--surface-1);
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.28);
+  padding: 0;
+  overflow: hidden;
+}
+
+.question-modal::backdrop {
+  background: rgba(0, 0, 0, 0.5);
+  backdrop-filter: blur(3px);
+}
+
+.question-modal form {
+  display: flex;
+  flex-direction: column;
+  max-height: 85vh;
+}
+
+.question-modal .modal-head {
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.question-modal .modal-head h3 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.question-dlg-body {
+  padding: 20px;
+  overflow-y: auto;
+  flex: 1;
+}
+
+.question-modal .modal-actions {
+  padding: 14px 20px;
+  border-top: 1px solid var(--border);
+  background: var(--surface-2);
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+/* ───────────── In-Chat Question Card ───────────── */
+.chat-question-card {
+  margin: 6px 0 10px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: 12px;
+  padding: 10px 14px;
+  font-size: 13px;
+  max-width: 100%;
+}
+
+.chat-question-card.is-done {
+  border-left-color: var(--text-dim, #888);
+}
+
+.chat-question-card.is-cancelled {
+  border-left-color: var(--danger, #e53e3e);
+  opacity: 0.7;
+}
+
+.cqc-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.cqc-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 600;
+  font-size: 12.5px;
+  color: var(--accent);
+}
+
+.cqc-question {
+  font-weight: 500;
+  color: var(--text);
+  margin-bottom: 8px;
+  line-height: 1.4;
+}
+
+.cqc-options-preview {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.cqc-option-pill {
+  font-size: 11.5px;
+  padding: 3px 9px;
+  background: var(--bg-sunken);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  color: var(--dim);
+}
+
+.cqc-result {
+  font-size: 13px;
+  color: var(--text);
+  background: var(--surface-3, var(--bg-sunken));
+  border-radius: 8px;
+  padding: 8px 12px;
+  margin-top: 8px;
+  border-left: 3px solid var(--accent);
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.cqc-result-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--accent);
+}
+
+.cqc-result-val {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.cqc-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+/* ───────────── Question Prompts ───────────── */
+.question-prompts {
+  padding: 0 16px;
+}
+
+.question-card {
+  max-width: var(--col);
+  margin: 0 auto 10px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  padding: 14px 16px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.08);
+}
+
+.question-card.resolved {
+  opacity: .6;
+  pointer-events: none;
+}
+
+.question-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.question-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.question-badge .q-ico {
+  font-size: 15px;
+}
+
+.question-block {
+  margin-bottom: 14px;
+}
+
+.question-category {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--accent);
+  margin-bottom: 4px;
+}
+
+.question-text {
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 1.45;
+  color: var(--text);
+  margin-bottom: 10px;
+}
+
+.question-options {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+
+.question-opt-btn {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  text-align: left;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 8px 12px;
+  font-size: 13px;
+  color: var(--text);
+  cursor: pointer;
+  transition: all 0.15s ease;
+  user-select: none;
+}
+
+.question-opt-btn:hover {
+  background: var(--surface-3);
+  border-color: var(--border-hover, var(--border));
+}
+
+.question-opt-btn.selected {
+  background: var(--accent-subtle, rgba(59, 130, 246, 0.12));
+  border-color: var(--accent);
+  color: var(--text);
+}
+
+.opt-indicator {
+  font-size: 13px;
+  line-height: 1.4;
+  color: var(--dim);
+  flex-shrink: 0;
+}
+
+.question-opt-btn.selected .opt-indicator {
+  color: var(--accent);
+}
+
+.opt-content {
+  flex: 1;
+  min-width: 0;
+}
+
+.opt-label {
+  font-weight: 500;
+  line-height: 1.35;
+}
+
+.opt-desc {
+  font-size: 11.5px;
+  color: var(--dim);
+  margin-top: 2px;
+  line-height: 1.3;
+}
+
+.question-custom-wrap {
+  margin-top: 8px;
+}
+
+.question-custom-input {
+  width: 100%;
+  box-sizing: border-box;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 7px 11px;
+  font-size: 12.5px;
+  color: var(--text);
+  outline: none;
+  transition: border-color 0.15s ease;
+}
+
+.question-custom-input:focus {
+  border-color: var(--accent);
+}
+
+.question-card-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.question-resolved-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--accent);
+  padding: 4px 0;
+}
+
+
 /* ───────────── Composer ───────────── */
 .composer-wrap {
   padding: 4px 16px calc(12px + var(--safe-bottom));
@@ -2445,15 +2770,15 @@ select:focus-visible,
 
 .composer-hint {
   max-width: var(--col);
-  margin: 8px auto 0;
+  margin: 4px auto 0;
   display: flex;
   align-items: center;
   justify-content: center;
   flex-wrap: wrap;
-  gap: 3px 12px;
+  gap: 3px 8px;
   text-align: center;
-  font-size: 11.5px;
-  line-height: 1.7;
+  font-size: 11px;
+  line-height: 1.35;
   color: var(--dimmer);
 }
 
@@ -2461,18 +2786,21 @@ select:focus-visible,
   display: none;
 }
 
-/* The chat's working folder, as a quiet pill under the message box. */
+/* The chat's working folder, as a compact pill in the single composer-hint row. */
 .composer-folder {
-  display: block;
+  display: inline-flex;
+  align-items: center;
   width: fit-content;
-  max-width: min(var(--col), 100%);
-  margin: 8px auto 0;
-  padding: 2px 10px;
+  max-width: min(220px, 35vw);
+  margin: 0;
+  padding: 1px 7px;
+  height: 19px;
+  box-sizing: border-box;
   background: var(--tint);
   border: 1px solid var(--border-faint);
   border-radius: 999px;
-  font-size: 11.5px;
-  line-height: 1.6;
+  font-size: 11px;
+  line-height: 1;
   color: var(--dim);
   cursor: pointer;
   white-space: nowrap;
@@ -3803,49 +4131,11 @@ select:focus-visible,
     transform: none;
   }
 
-  /* The title, the AI button, export and the model picker no longer fit on one
-     line on a phone, so the model picker drops to a second row. */
   #chat-header {
-    display: grid;
-    grid-template-columns: auto minmax(0, 1fr) auto auto;
-    grid-template-areas:
-      "toggle title ai export"
-      "toggle model model model";
+    display: flex;
     align-items: center;
-    gap: 2px 8px;
-    padding: 6px 10px 6px;
-  }
-
-  #btn-toggle-sidebar {
-    grid-area: toggle;
-  }
-
-  .chat-title-wrap {
-    grid-area: title;
-  }
-
-  #btn-ai-title {
-    grid-area: ai;
-  }
-
-  #btn-export-chat {
-    grid-area: export;
-  }
-
-  .model-select {
-    grid-area: model;
-    justify-self: start;
-    max-width: 100%;
-    height: 26px;
-    margin-top: 2px;
-    border-color: transparent;
-    padding: 0 4px 0 0;
-    font-size: 12.5px;
-  }
-
-  .model-select:hover {
-    border-color: transparent;
-    background: transparent;
+    gap: 6px;
+    padding: 8px 10px;
   }
 
   .messages {
@@ -3886,13 +4176,14 @@ select:focus-visible,
   }
 
   .composer-hint {
-    margin-top: 6px;
-    gap: 2px 10px;
-    font-size: 11px;
+    margin-top: 3px;
+    gap: 2px 6px;
+    font-size: 10.5px;
   }
 
   .composer-folder {
-    margin-top: 6px;
+    margin: 0;
+    max-width: 140px;
   }
 
   .plus-menu {

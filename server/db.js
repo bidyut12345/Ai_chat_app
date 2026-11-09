@@ -201,6 +201,8 @@ export function initDb() {
   // Rolling context summary (auto-compress): text + id of last summarized msg.
   addConvCol('summary TEXT');
   addConvCol('summarized_upto INTEGER NOT NULL DEFAULT 0');
+  // Pinned chats sort to the top of the sidebar regardless of recency.
+  addConvCol('pinned INTEGER NOT NULL DEFAULT 0');
   // Owner of the conversation. NULL means it predates multi-user auth and is
   // claimed by the first user to register (see routes/auth.js).
   addConvCol('user_id INTEGER REFERENCES users(id) ON DELETE CASCADE');

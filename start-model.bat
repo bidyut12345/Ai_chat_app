@@ -1,10 +1,12 @@
 @echo off
 rem ============================================================
 rem  Starts the gufo model server (port 8080)
-rem  Runs C:\AI\gufo-build\gufo.exe serve directly, but only if
-rem  nothing is listening on 8080 yet.
+rem  Prefers C:\AI\gufo-build-start.cmd if present, otherwise
+rem  runs C:\AI\gufo-build\gufo.exe serve directly.
+rem  Safe to run twice: does nothing if 8080 is already up.
 rem ============================================================
 setlocal
+set "GUFO_CMD=C:\AI\gufo-build-start.cmd"
 set "GUFO_EXE=C:\AI\gufo-build\gufo.exe"
 
 netstat -ano | findstr /r /c:":8080  *[0-9].*LISTENING" >nul 2>&1
@@ -13,8 +15,14 @@ if not errorlevel 1 (
   exit /b 0
 )
 
+if exist "%GUFO_CMD%" (
+  echo Starting model server using "%GUFO_CMD%" ...
+  start "gufo" /min cmd /c ""%GUFO_CMD%""
+  exit /b 0
+)
+
 if not exist "%GUFO_EXE%" (
-  echo ERROR: "%GUFO_EXE%" not found.
+  echo ERROR: Neither "%GUFO_CMD%" nor "%GUFO_EXE%" was found.
   exit /b 1
 )
 

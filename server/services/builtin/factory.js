@@ -1,4 +1,4 @@
-﻿/**
+/**
  * Shared plumbing for the in-process built-in MCP servers.
  *
  * Each built-in server is a real MCP `Server` connected to its client through
@@ -43,8 +43,12 @@ export function createBuiltinServer(name, version, tools) {
     if (!tool) throw new Error(`Unknown tool "${req.params.name}"`);
     try {
       const out = await tool.handler(req.params.arguments || {});
-      return { content: [{ type: 'text', text: clamp(out) }], isError: false };
+      const text = typeof out === 'string' ? clamp(out) : clamp(JSON.stringify(out, null, 2));
+      return { content: [{ type: 'text', text }], isError: false };
     } catch (e) {
+      if (e && e.payload) {
+        return { content: [{ type: 'text', text: JSON.stringify(e.payload, null, 2) }], isError: true };
+      }
       const prefix = e instanceof PolicyError ? 'Access denied' : 'Error';
       return { content: [{ type: 'text', text: `${prefix}: ${e.message}` }], isError: true };
     }

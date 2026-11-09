@@ -10,6 +10,7 @@ import { fsRouter, conversationFsRouter } from './routes/files.js';
 import chatRouter from './routes/chat.js';
 import mcpRouter from './routes/mcp.js';
 import approvalsRouter from './routes/approvals.js';
+import questionsRouter from './routes/questions.js';
 import authRouter from './routes/auth.js';
 import { attachUser, requireAuth, requireAdmin } from './services/auth.js';
 import { connectAll, stopAll } from './services/mcpManager.js';
@@ -55,6 +56,7 @@ app.use('/api/fs', requireAdmin, fsRouter);
 app.use('/api/chat', chatRouter);
 app.use('/api/mcp', mcpRouter);
 app.use('/api/approvals', approvalsRouter);
+app.use('/api/questions', questionsRouter);
 
 app.use('/api', (req, res) => res.status(404).json({ error: 'not found' }));
 

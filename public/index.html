@@ -79,7 +79,6 @@
         <button type="button" id="btn-ai-title" class="ai-title-btn" title="Generate a title with AI"><span class="hb-ico">✨</span><span class="hb-label">AI</span></button>
         <button type="button" id="btn-header-files" class="header-btn" title="View workspace files"><span class="hb-ico">📁</span><span class="hb-label">Files</span></button>
         <button type="button" id="btn-export-chat" class="header-btn" title="Download this chat as Markdown"><span class="hb-ico">⤓</span><span class="hb-label">Export</span></button>
-        <select id="sel-model" class="model-select" title="Model for this conversation"></select>
       </header>
 
       <div class="messages-wrap">
@@ -204,8 +203,8 @@
           <button type="submit" id="btn-send" class="send-btn" title="Send">↑</button>
           <button type="button" id="btn-stop" class="send-btn stop hidden" title="Stop generating">■</button>
         </form>
-        <div id="composer-folder" class="composer-folder hidden" title=""></div>
         <div class="composer-hint">
+          <span id="composer-folder" class="composer-folder hidden" title=""></span>
           <span id="hint-tools"></span>
           <span class="ctx-compact-group" title="Compact older context into a summary now. Choose how much recent context to keep.">
             <select id="compact-level" class="ctx-compact-level" aria-label="Compact level">
@@ -567,6 +566,21 @@
           <label class="nu-admin"><input id="nu-admin" type="checkbox" /> admin</label>
           <button type="button" id="nu-create" class="btn btn-primary">Add</button>
         </div>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- ───────── Question dialog (AskUserQuestion / ask_question) ───────── -->
+  <dialog id="dlg-question" class="modal question-modal">
+    <form method="dialog" id="question-form">
+      <header class="modal-head">
+        <h3 id="question-dlg-title"><span class="q-ico">💬</span> Question from Assistant</h3>
+        <button type="button" class="icon-btn plain" id="btn-question-dlg-close" data-close>✕</button>
+      </header>
+      <div id="question-dlg-body" class="modal-body question-dlg-body"></div>
+      <div class="row modal-actions">
+        <button type="button" class="btn" id="btn-question-dlg-skip">Skip</button>
+        <button type="button" class="btn btn-primary" id="btn-question-dlg-submit" disabled>Submit Answer</button>
       </div>
     </form>
   </dialog>

@@ -106,6 +106,29 @@ export async function chatCompletion(cfg, body, { stream = false, signal } = {})
     } catch {
       /* keep raw */
     }
+    // Some OpenAI-compatible servers reject array content in tool messages. Retry once with flattened strings.
+    if (res.status === 400 && payload.messages?.some((m) => m.role === 'tool' && Array.isArray(m.content))) {
+      payload.messages = payload.messages.map((m) => {
+        if (m.role === 'tool' && Array.isArray(m.content)) {
+          const txt = m.content.find((p) => p.type === 'text')?.text || '';
+          return { ...m, content: txt };
+        }
+        return m;
+      });
+      res = await fetch(chatUrl(cfg.baseUrl), {
+        method: 'POST',
+        headers: { ...headers(cfg.apiKey), Accept: stream ? 'text/event-stream' : 'application/json' },
+        body: JSON.stringify(payload),
+        signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(600000)]) : AbortSignal.timeout(600000)
+      });
+      if (res.ok) {
+        if (stream) return res;
+        return res.json();
+      }
+      const t2 = await res.text().catch(() => '');
+      try { msg = JSON.parse(t2)?.error?.message || t2; } catch { msg = t2; }
+      throw new Error(`Upstream error ${res.status}: ${msg || res.statusText}`);
+    }
     // Some OpenAI-compatible servers reject the stream_options field. Retry once
     // without it so streaming still works (token counts then fall back to 0).
     if (payload.stream_options && res.status === 400 && /stream_options/i.test(msg)) {

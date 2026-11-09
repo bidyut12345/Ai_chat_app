@@ -1,4 +1,4 @@
-﻿/**
+/**
  * Built-in MCP server: `shell` (run shell commands).
  *
  * Foreground commands run to completion with a timeout; long-running ones can
@@ -7,6 +7,9 @@
  */
 import { spawn, spawnSync } from 'node:child_process';
 import crypto from 'node:crypto';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { resolveCwd, shellTimeoutMs, PolicyError } from './policy.js';
 
 const OUTPUT_CAP = 120000;
@@ -18,11 +21,11 @@ const jobs = new Map(); // id -> { id, command, cwd, child, output, startedAt, e
 
 function pickShell(kind) {
   const k = String(kind || 'auto').toLowerCase();
-  if (k === 'powershell' || k === 'pwsh') return { exe: k === 'pwsh' ? 'pwsh' : 'powershell', args: ['-NoProfile', '-NonInteractive', '-Command'] };
-  if (k === 'cmd') return { exe: 'cmd.exe', args: ['/d', '/s', '/c'] };
-  if (k === 'sh' || k === 'bash') return { exe: k, args: ['-c'] };
-  if (IS_WINDOWS) return { exe: 'cmd.exe', args: ['/d', '/s', '/c'] };
-  return { exe: '/bin/sh', args: ['-c'] };
+  if (k === 'powershell' || k === 'pwsh') return { exe: k === 'pwsh' ? 'pwsh' : 'powershell', isPowerShell: true, args: [] };
+  if (k === 'cmd') return { exe: 'cmd.exe', isPowerShell: false, args: ['/d', '/s', '/c'] };
+  if (k === 'sh' || k === 'bash') return { exe: k, isPowerShell: false, args: ['-c'] };
+  if (IS_WINDOWS) return { exe: 'cmd.exe', isPowerShell: false, args: ['/d', '/s', '/c'] };
+  return { exe: '/bin/sh', isPowerShell: false, args: ['-c'] };
 }
 
 function appendOutput(job, chunk) {
@@ -47,14 +50,16 @@ export const shellTools = [
     name: 'run_command',
     destructive: true,
     description:
-      'Run a shell command and wait for it to finish. Returns the exit code plus stdout and stderr. Use this for builds, tests, git, package scripts and other quick commands. For servers or watchers use start_command instead.',
+      'Run a shell command and wait for it to finish. Returns the exit code plus stdout and stderr. Use interpreter="powershell" to execute PowerShell scripts safely without cmd quoting. Default timeout 30 seconds.',
     inputSchema: {
       type: 'object',
       properties: {
         command: { type: 'string', description: 'Command line to execute.' },
         cwd: { type: 'string', description: 'Working directory. Defaults to the configured shell folder.' },
-        timeout_seconds: { type: 'number', description: 'Kill the command after this many seconds. Default from settings.' },
-        shell: { type: 'string', enum: ['auto', 'cmd', 'powershell', 'pwsh', 'sh', 'bash'], description: 'Interpreter to use. Default auto (cmd on Windows, sh elsewhere).' }
+        timeout_seconds: { type: 'number', description: 'Kill the command after this many seconds. Default 30.' },
+        shell: { type: 'string', enum: ['auto', 'cmd', 'powershell', 'pwsh', 'sh', 'bash'], description: 'Interpreter to use. Default auto.' },
+        interpreter: { type: 'string', enum: ['auto', 'cmd', 'powershell', 'pwsh', 'sh', 'bash'], description: 'Interpreter to use (alias for shell).' },
+        max_output_bytes: { type: 'number', description: 'Maximum output bytes to capture before truncating. Default 120000.' }
       },
       required: ['command']
     },
@@ -63,11 +68,24 @@ export const shellTools = [
       if (!command) throw new PolicyError('command is required');
       const cwd = resolveCwd(args.cwd);
       const requested = Number(args.timeout_seconds);
-      const timeout = Number.isFinite(requested) && requested > 0 ? Math.min(requested, 3600) * 1000 : shellTimeoutMs();
-      const { exe, args: shellArgs } = pickShell(args.shell);
+      const timeout = Number.isFinite(requested) && requested > 0 ? Math.min(requested, 3600) * 1000 : 30000;
+      const maxBytes = Math.min(Math.max(Number(args.max_output_bytes) || OUTPUT_CAP, 1000), 5000000);
+
+      const targetShell = args.interpreter || args.shell || 'auto';
+      const shellInfo = pickShell(targetShell);
+
+      let tempFile = null;
+      let exe = shellInfo.exe;
+      let shellArgs = shellInfo.args;
+
+      if (shellInfo.isPowerShell) {
+        tempFile = path.join(os.tmpdir(), `rirsigpt-${Date.now()}-${crypto.randomBytes(4).toString('hex')}.ps1`);
+        fs.writeFileSync(tempFile, '\uFEFF' + command, 'utf8');
+        shellArgs = ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', tempFile];
+      }
 
       return await new Promise((resolve) => {
-        const child = spawn(exe, [...shellArgs, command], { cwd, windowsHide: true, env: process.env });
+        const child = spawn(exe, [...shellArgs, ...(shellInfo.isPowerShell ? [] : [command])], { cwd, windowsHide: true, env: process.env });
         let stdout = '';
         let stderr = '';
         let timedOut = false;
@@ -79,23 +97,52 @@ export const shellTools = [
 
         child.stdout.on('data', (d) => {
           stdout += d.toString('utf8');
-          if (stdout.length > OUTPUT_CAP * 1.5) stdout = stdout.slice(-OUTPUT_CAP);
+          if (stdout.length > maxBytes * 1.5) stdout = stdout.slice(-maxBytes);
         });
         child.stderr.on('data', (d) => {
           stderr += d.toString('utf8');
-          if (stderr.length > OUTPUT_CAP * 1.5) stderr = stderr.slice(-OUTPUT_CAP);
+          if (stderr.length > maxBytes * 1.5) stderr = stderr.slice(-maxBytes);
         });
 
         const finish = (code, signal, spawnError) => {
           clearTimeout(timer);
+          if (tempFile) {
+            try { fs.unlinkSync(tempFile); } catch {}
+          }
+
+          if (timedOut) {
+            return resolve({
+              ok: false,
+              timed_out: true,
+              exit_code: null,
+              stdout: tail(stdout.trimEnd(), maxBytes),
+              stderr: tail(stderr.trimEnd(), maxBytes),
+              summary: `$ ${command}\nTimed out after ${Math.round(timeout / 1000)}s (timed_out: true)\n--- stdout ---\n${tail(stdout.trimEnd(), maxBytes)}\n--- stderr ---\n${tail(stderr.trimEnd(), maxBytes)}`
+            });
+          }
+
+          if (!spawnError && code === 0 && !stderr.trim() && stdout.trim() === command.trim()) {
+            return resolve({
+              ok: false,
+              error: 'command_not_executed',
+              hint: 'use interpreter=powershell or -File',
+              stdout: stdout.trim(),
+              summary: `Error: command_not_executed\nHint: use interpreter=powershell or -File\nOutput was identical to command line: ${stdout.trim()}`
+            });
+          }
+
+          const stdoutTruncated = stdout.length > maxBytes;
+          const stderrTruncated = stderr.length > maxBytes;
+
           const parts = [
             `$ ${command}`,
             `cwd: ${cwd}`,
             `shell: ${exe}`,
-            spawnError ? `error: ${spawnError.message}` : `exit: ${code}${signal ? ` (signal ${signal})` : ''}${timedOut ? ` - TIMED OUT after ${Math.round(timeout / 1000)}s` : ''}`
+            spawnError ? `error: ${spawnError.message}` : `exit: ${code}${signal ? ` (signal ${signal})` : ''}`
           ];
-          if (stdout.trim()) parts.push(`--- stdout ---\n${tail(stdout.trimEnd(), OUTPUT_CAP)}`);
-          if (stderr.trim()) parts.push(`--- stderr ---\n${tail(stderr.trimEnd(), OUTPUT_CAP)}`);
+          if (stdoutTruncated || stderrTruncated) parts.push('[output truncated: exceeded max_output_bytes]');
+          if (stdout.trim()) parts.push(`--- stdout ---\n${tail(stdout.trimEnd(), maxBytes)}`);
+          if (stderr.trim()) parts.push(`--- stderr ---\n${tail(stderr.trimEnd(), maxBytes)}`);
           if (!stdout.trim() && !stderr.trim()) parts.push('(no output)');
           resolve(parts.join('\n'));
         };

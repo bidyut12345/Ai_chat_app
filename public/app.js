@@ -193,15 +193,10 @@ async function loadSettings() {
 function fillModelOptions(models) {
   state.models = models || [];
   const dl = $('#model-list');
-  dl.innerHTML = '';
-  for (const m of state.models) dl.append(el('option', { value: m }));
-  const sel = $('#sel-model');
-  const cur = sel.value || current()?.model || state.settings.model || '';
-  sel.innerHTML = '';
-  sel.append(el('option', { value: '' }, '— server default —'));
-  for (const m of state.models) sel.append(el('option', { value: m }, m));
-  if (cur && !state.models.includes(cur)) sel.append(el('option', { value: cur }, cur));
-  sel.value = cur;
+  if (dl) {
+    dl.innerHTML = '';
+    for (const m of state.models) dl.append(el('option', { value: m }));
+  }
 }
 
 async function loadPrompts() {
@@ -274,6 +269,9 @@ function renderConvList() {
   const items = state.conversations.filter(
     (c) => !q || (c.title || '').toLowerCase().includes(q) || (c.preview || '').toLowerCase().includes(q)
   );
+  // Pinned chats first. Stable, so the server's recency order holds within each
+  // group; needed because a brand-new chat is unshifted to the top locally.
+  items.sort((a, b) => (b.pinned ? 1 : 0) - (a.pinned ? 1 : 0));
   if (!items.length) {
     list.append(el('div', { class: 'muted', style: 'padding:12px 10px;font-size:13px' }, 'No conversations yet.'));
     return;
@@ -290,8 +288,16 @@ function renderConvList() {
       el('div', { class: 'conv-title' },
         el('span', { class: 'conv-title-text', title }, title),
         running ? el('span', { class: 'conv-spinner', title: 'Generating…', 'aria-label': 'Generating…' }) : null),
-      el('div', { class: 'conv-meta' }, `${c.message_count || 0} msg · ${c.prompt_name || 'no persona'}${c.model ? ' · ' + c.model : ''}`),
       c.workdir ? el('div', { class: 'conv-path', title: c.workdir }, `📂 ${c.workdir}`) : null,
+      el('button', {
+        class: `conv-pin${c.pinned ? ' on' : ''}`,
+        title: c.pinned ? 'Unpin conversation' : 'Pin to top',
+        'aria-label': c.pinned ? 'Unpin conversation' : 'Pin to top',
+        onclick: (ev) => {
+          ev.stopPropagation();
+          togglePin(c);
+        }
+      }, c.pinned ? '📌' : '📍'),
       el('button', {
         class: 'conv-del',
         title: 'Delete conversation',
@@ -303,6 +309,23 @@ function renderConvList() {
     );
     list.append(item);
   }
+}
+
+/** Pin/unpin a chat. Pinned chats sort above the rest in the sidebar. */
+async function togglePin(c) {
+  const next = c.pinned ? 0 : 1;
+  const conv = state.conversations.find((x) => x.id === c.id);
+  if (conv) conv.pinned = next;
+  renderConvList();
+  try {
+    await api(`/conversations/${c.id}`, { method: 'PATCH', body: { pinned: next } });
+  } catch (e) {
+    if (conv) conv.pinned = c.pinned;
+    renderConvList();
+    toast(`Could not update pin: ${e.message}`, true);
+    return;
+  }
+  await loadConversations();
 }
 
 async function deleteConversation(id) {
@@ -335,6 +358,7 @@ async function newConversation() {
   $('#input').value = '';
   autoresize();
   clearAttachments();
+  clearQuestionPrompts();
   state.messages = [];
   state.fileChanges = [];
   visibleUserTurns = INITIAL_USER_TURNS;
@@ -386,7 +410,6 @@ async function openConversation(id) {
   if (cached) {
     $('#chat-title').value = cached.title || 'New chat';
     $('#sel-prompt').value = cached.prompt_id ?? '';
-    $('#sel-model').value = cached.model || state.settings.model || '';
     if ($('#sel-effort')) $('#sel-effort').value = cached.reasoning_effort || state.settings.reasoning_effort || 'auto';
   }
   renderConvList();
@@ -411,7 +434,6 @@ async function openConversation(id) {
   if (c) Object.assign(c, conv);
   $('#chat-title').value = conv.title || 'New chat';
   $('#sel-prompt').value = conv.prompt_id ?? '';
-  $('#sel-model').value = conv.model || state.settings.model || '';
   if ($('#sel-effort')) $('#sel-effort').value = conv.reasoning_effort || state.settings.reasoning_effort || 'auto';
   renderConvList();
   renderMessages();
@@ -422,6 +444,7 @@ async function openConversation(id) {
 
   // If this chat is generating, resume watching it live.
   if (runningIds.has(id)) attachToRun(id, 0, runStartedAt.get(id));
+  loadPendingQuestions(id);
 }
 
 function updateChatSub() {
@@ -1413,7 +1436,177 @@ function fmtToolDuration(ms) {
  *
  * @param {{id,name,argsText,status,resultText,durationMs,cancelled,denied,showCancel}} o
  */
+function isQuestionTool(name) {
+  return name === 'ask_question' || name === 'AskUserQuestion' || name === 'ask_user_question';
+}
+
+function formatCleanAnswer(text) {
+  if (!text) return '';
+  if (typeof text !== 'string') text = JSON.stringify(text);
+  const colonMatch = /:\s*([^\n\r]+)$/m.exec(text.trim());
+  if (colonMatch && colonMatch[1]) {
+    return colonMatch[1].trim();
+  }
+  let clean = text.replace(/^User answered the question\(s\):\s*/i, '').trim();
+  clean = clean.replace(/^-\s*[^:]+:\s*/m, '').trim();
+  return clean || text;
+}
+
+function updateChatQuestionWidget(widget, d) {
+  if (!widget) return;
+  let qObj = null;
+  try {
+    const rawArgs = d.arguments;
+    const parsed = typeof rawArgs === 'string' ? JSON.parse(rawArgs) : rawArgs;
+    if (parsed) {
+      if (Array.isArray(parsed.questions) && parsed.questions.length) qObj = parsed.questions[0];
+      else if (parsed.question) qObj = parsed;
+    }
+  } catch {}
+
+  if (qObj) {
+    const titleEl = widget.querySelector('.cqc-title strong');
+    if (titleEl && qObj.header) titleEl.textContent = qObj.header;
+    const qEl = widget.querySelector('.cqc-question');
+    if (qEl && qObj.question) qEl.textContent = qObj.question;
+    const actions = widget.querySelector('.cqc-actions');
+    if (actions && !widget.classList.contains('is-done') && !widget.classList.contains('is-cancelled')) {
+      actions.classList.remove('hidden');
+    }
+
+    let optsWrap = widget.querySelector('.cqc-options-preview');
+    if (qObj.options && Array.isArray(qObj.options) && qObj.options.length) {
+      if (!optsWrap) {
+        optsWrap = el('div', { class: 'cqc-options-preview' });
+        widget.insertBefore(optsWrap, widget.querySelector('.cqc-result'));
+      }
+      optsWrap.innerHTML = '';
+      for (const opt of qObj.options) {
+        const lbl = typeof opt === 'string' ? opt : opt.label;
+        if (lbl) optsWrap.append(el('span', { class: 'cqc-option-pill' }, lbl));
+      }
+    }
+  }
+}
+
+function buildChatQuestionWidget(o) {
+  const wrap = el('div', { class: 'tool-chip chat-question-card' });
+  if (o.id) wrap.dataset.callId = o.id;
+
+  let qObj = null;
+  try {
+    const rawArgs = o.argsText || o.arguments;
+    const parsed = typeof rawArgs === 'string' ? JSON.parse(rawArgs) : rawArgs;
+    if (parsed) {
+      if (Array.isArray(parsed.questions) && parsed.questions.length) qObj = parsed.questions[0];
+      else if (parsed.question) qObj = parsed;
+    }
+  } catch {}
+
+  const qText = qObj?.question || 'The assistant has a question for you:';
+  const headerText = qObj?.header || 'Question from Assistant';
+
+  const head = el('div', { class: 'cqc-head' },
+    el('div', { class: 'cqc-title' },
+      el('span', { class: 'q-ico' }, '💬'),
+      el('strong', {}, headerText)
+    ),
+    el('span', { class: 'tool-status muted' }, 'waiting for answer…')
+  );
+  wrap.append(head);
+
+  const body = el('div', { class: 'cqc-question' }, qText);
+  wrap.append(body);
+
+  if (qObj?.options && Array.isArray(qObj.options) && qObj.options.length) {
+    const optsWrap = el('div', { class: 'cqc-options-preview' });
+    for (const opt of qObj.options) {
+      const lbl = typeof opt === 'string' ? opt : opt.label;
+      if (lbl) optsWrap.append(el('span', { class: 'cqc-option-pill' }, lbl));
+    }
+    wrap.append(optsWrap);
+  }
+
+  const resultEl = el('div', { class: 'cqc-result hidden' });
+  wrap.append(resultEl);
+
+  const answerBtn = el('button', {
+    type: 'button',
+    class: 'btn btn-primary sm',
+    onclick: (e) => {
+      e.preventDefault();
+      if (activeQuestionMeta && (activeQuestionMeta.toolCallId === o.id || activeQuestionMeta.id === o.id)) {
+        openQuestionDialog(activeQuestionMeta);
+      } else {
+        openQuestionDialog({
+          id: o.id,
+          conversationId: state.currentId,
+          toolCallId: o.id,
+          questions: qObj ? [qObj] : [{ question: qText }]
+        });
+      }
+    }
+  }, '💬 Answer Question');
+
+  const cancelBtn = el('button', {
+    type: 'button',
+    class: 'btn sm',
+    onclick: async (e) => {
+      e.preventDefault();
+      cancelBtn.disabled = true;
+      cancelBtn.textContent = 'Skipping…';
+      try {
+        await api('/questions/' + encodeURIComponent(o.id) + '/cancel', { method: 'POST', body: { reason: 'User skipped question.' } });
+      } catch {}
+      applyChatQuestionState(wrap, { status: 'cancelled' });
+      closeQuestionDialog();
+    }
+  }, 'Skip');
+
+  const actions = el('div', { class: 'cqc-actions' }, answerBtn, cancelBtn);
+  if (!qObj) actions.classList.add('hidden');
+  wrap.append(actions);
+
+  applyChatQuestionState(wrap, o);
+  return wrap;
+}
+
+function applyChatQuestionState(widget, o) {
+  if (!widget) return;
+  const status = widget.querySelector('.tool-status');
+  const actions = widget.querySelector('.cqc-actions');
+  const result = widget.querySelector('.cqc-result');
+
+  widget.classList.remove('is-running', 'is-done', 'is-cancelled', 'is-denied');
+  if (o.status === 'running') {
+    widget.classList.add('is-running');
+    if (status) status.textContent = 'waiting for your answer…';
+    if (actions) actions.classList.remove('hidden');
+    if (result) result.classList.add('hidden');
+  } else if (o.status === 'cancelled') {
+    widget.classList.add('is-cancelled');
+    if (status) status.textContent = 'skipped';
+    if (actions) actions.classList.add('hidden');
+    if (result) {
+      result.innerHTML = '<span class="cqc-result-label" style="color:var(--danger, #e53e3e);">✕ Skipped:</span> <span class="cqc-result-val">Question skipped by user</span>';
+      result.classList.remove('hidden');
+    }
+  } else {
+    widget.classList.add('is-done');
+    if (status) status.textContent = 'answered';
+    if (actions) actions.classList.add('hidden');
+    if (result) {
+      const clean = formatCleanAnswer(o.resultText);
+      if (clean) {
+        result.innerHTML = '<span class="cqc-result-label">✓ Your Answer:</span> <strong class="cqc-result-val">' + escapeHtml(clean) + '</strong>';
+        result.classList.remove('hidden');
+      }
+    }
+  }
+}
+
 function buildToolChip(o) {
+  if (isQuestionTool(o.name)) return buildChatQuestionWidget(o);
   const status = el('span', { class: 'tool-status' });
   const cancel = el('button', {
     class: 'tool-cancel',
@@ -1438,6 +1631,7 @@ function buildToolChip(o) {
 /** Update a chip's status line, result body and cancel button in place. */
 function applyToolState(chip, o) {
   if (!chip) return;
+  if (chip.classList.contains('chat-question-card')) { applyChatQuestionState(chip, o); return; }
   const status = chip.querySelector('.tool-status');
   const cancel = chip.querySelector('.tool-cancel');
   const out = chip.querySelector('.tool-out');
@@ -2139,7 +2333,6 @@ async function sendMessage(regenerate = false) {
         image_url: image || undefined,
         regenerate,
         use_tools: $('#chk-tools').checked,
-        model: $('#sel-model').value || undefined,
         reasoning_effort: $('#sel-effort')?.value || undefined
       }
     });
@@ -2265,7 +2458,7 @@ function noteToken(r) {
 function openRunStream(r) {  const url = `/api/chat/stream?conversation_id=${r.conversationId}&last_event_id=${r.lastEventId}`;
   const es = new EventSource(url);
   r.es = es;
-  for (const name of ['delta', 'reasoning', 'notice', 'tool_generating', 'tool_call', 'tool_result', 'tool_cancelled', 'tool_denied', 'tool_unavailable', 'file_created', 'compressed', 'title', 'stats', 'done', 'error', 'resync', 'idle']) {
+  for (const name of ['delta', 'reasoning', 'notice', 'tool_generating', 'tool_call', 'tool_result', 'tool_cancelled', 'tool_denied', 'tool_unavailable', 'file_created', 'question_prompt', 'question_resolved', 'compressed', 'title', 'stats', 'done', 'error', 'resync', 'idle']) {
     es.addEventListener(name, (e) => {
       // Track our cursor so a reconnect resumes in the right place. Events
       // without an id (resync/idle) must not zero the cursor.
@@ -2387,13 +2580,18 @@ function handleRunEvent(r, event, d) {
     bubble.append(chip);
     scrollToBottomIfFollowing();
   } else if (event === 'tool_generating') {
-    // The model is still streaming this tool call's arguments (can take a long
-    // time for big write/edit payloads) — show the chip with live progress.
+    // Interactive questions must not show any placeholder or buttons while generating
+    if (isQuestionTool(d.name)) {
+      const existing = findChip(bubble, d.id);
+      if (existing) existing.remove();
+      return;
+    }
+    if (!d.name) return;
     sealThinking(r);
     sealText(r);
     let chip = findChip(bubble, d.id);
     if (!chip) {
-      chip = buildToolChip({ id: d.id, name: d.name || 'tool', status: 'running' });
+      chip = buildToolChip({ id: d.id, name: d.name, status: 'running' });
       bubble.append(chip);
     }
     const nameEl = chip.querySelector('.tool-name');
@@ -2408,6 +2606,10 @@ function handleRunEvent(r, event, d) {
     const argsText = JSON.stringify(d.arguments ?? {}, null, 2);
     let chip = findChip(bubble, d.id);
     if (chip) {
+      if (chip.classList.contains('chat-question-card')) {
+        updateChatQuestionWidget(chip, d);
+        applyChatQuestionState(chip, { status: 'running' });
+      } else {
       const nameEl = chip.querySelector('.tool-name');
       if (nameEl && d.name) nameEl.textContent = d.name;
       let argsBlock = chip.querySelector('.tool-args');
@@ -2418,6 +2620,7 @@ function handleRunEvent(r, event, d) {
       const pre = argsBlock.querySelector('pre');
       if (pre && pre.textContent !== argsText) pre.textContent = argsText;
       applyToolState(chip, { status: 'running' });
+      }
     } else {
       chip = buildToolChip({
         id: d.id,
@@ -2443,6 +2646,10 @@ function handleRunEvent(r, event, d) {
         resultText: typeof d.result === 'string' ? d.result : JSON.stringify(d.result, null, 2)
       });
     }
+  } else if (event === 'question_prompt') {
+    openQuestionDialog(d);
+  } else if (event === 'question_resolved') {
+    removeQuestionPrompt(d.id, d.cancelled ? 'cancelled' : 'answered');
   } else if (event === 'file_created') {
     appendLiveFile(bubble, r, d);
     scrollToBottomIfFollowing();
@@ -2472,7 +2679,7 @@ function handleRunEvent(r, event, d) {
 }
 
 function findChip(bubble, id) {
-  return [...bubble.querySelectorAll('.tool-chip')].reverse().find((c) => c.dataset.callId === id);
+  return [...bubble.querySelectorAll('.tool-chip, .chat-question-card')].reverse().find((c) => c.dataset.callId === id);
 }
 
 async function finishRun(r, d) {
@@ -2644,7 +2851,6 @@ async function continueReply() {
         conversation_id: convId,
         continue: true,
         use_tools: $('#chk-tools').checked,
-        model: $('#sel-model').value || undefined,
         reasoning_effort: $('#sel-effort')?.value || undefined
       }
     });
@@ -3575,6 +3781,271 @@ async function answerApproval(id, allowed, scope) {
   }
 }
 
+/* ───────────────────────── Interactive Questions & Dialog ───────────────────────── */
+
+let questionStream = null;
+let activeQuestionMeta = null;
+
+function connectQuestionStream() {
+  if (questionStream) return;
+  const src = new EventSource('/api/questions/stream');
+  questionStream = src;
+  src.addEventListener('question_prompt', (e) => {
+    try {
+      const d = JSON.parse(e.data);
+      if (!d.conversationId || d.conversationId === state.currentId) {
+        openQuestionDialog(d);
+      }
+    } catch {}
+  });
+  src.addEventListener('question_resolved', (e) => {
+    try {
+      const d = JSON.parse(e.data);
+      closeQuestionDialog();
+      const inChatWidgets = document.querySelectorAll('.chat-question-card');
+      for (const w of inChatWidgets) {
+        if (w.dataset.callId === d.id || w.dataset.callId === d.toolCallId) {
+          applyChatQuestionState(w, {
+            status: d.cancelled ? 'cancelled' : 'done',
+            resultText: d.answers?.[0]?.answer || (d.cancelled ? 'Skipped' : 'Answer submitted')
+          });
+        }
+      }
+    } catch {}
+  });
+  src.addEventListener('keepalive', () => {});
+  src.onerror = () => {};
+}
+
+function disconnectQuestionStream() {
+  if (!questionStream) return;
+  questionStream.close();
+  questionStream = null;
+}
+
+async function loadPendingQuestions(convId) {
+  if (!convId) return;
+  try {
+    const res = await api('/questions/pending?conversation_id=' + convId);
+    if (res.questions && Array.isArray(res.questions) && res.questions.length > 0) {
+      openQuestionDialog(res.questions[0]);
+    }
+  } catch {}
+}
+
+function clearQuestionPrompts() {
+  closeQuestionDialog();
+}
+
+/** Open the dedicated interactive modal question dialog */
+function openQuestionDialog(meta) {
+  if (!meta || (!meta.id && !meta.toolCallId)) return;
+  activeQuestionMeta = meta;
+
+  const dlg = $('#dlg-question');
+  if (!dlg) return;
+
+  const titleEl = $('#question-dlg-title');
+  const bodyEl = $('#question-dlg-body');
+  const submitBtn = $('#btn-question-dlg-submit');
+  const skipBtn = $('#btn-question-dlg-skip');
+  const closeBtn = $('#btn-question-dlg-close');
+
+  const questions = meta.questions || [];
+  const primaryQ = questions[0];
+  const headerText = primaryQ?.header || 'Question from Assistant';
+
+  if (titleEl) {
+    titleEl.innerHTML = '<span class="q-ico">💬</span> ' + escapeHtml(headerText);
+  }
+
+  bodyEl.innerHTML = '';
+  const stateByQ = new Map();
+
+  for (const q of questions) {
+    const qBlock = el('div', { class: 'question-block', 'data-qid': q.id });
+    if (q.header && questions.length > 1) {
+      qBlock.append(el('div', { class: 'question-category' }, q.header));
+    }
+    qBlock.append(el('div', { class: 'question-text' }, q.question));
+
+    const qState = { selected: new Set(), customInput: null };
+    stateByQ.set(q.id, qState);
+
+    if (Array.isArray(q.options) && q.options.length) {
+      const optsWrap = el('div', { class: 'question-options' });
+      for (const opt of q.options) {
+        const ind = el('span', { class: 'opt-indicator' }, q.multiSelect ? '☐' : '○');
+        const content = el('div', { class: 'opt-content' },
+          el('div', { class: 'opt-label' }, opt.label),
+          opt.description ? el('div', { class: 'opt-desc' }, opt.description) : null
+        );
+        const optBtn = el('button', {
+          type: 'button',
+          class: 'question-opt-btn',
+          onclick: (ev) => {
+            ev.preventDefault();
+            if (q.multiSelect) {
+              if (qState.selected.has(opt.label)) {
+                qState.selected.delete(opt.label);
+                optBtn.classList.remove('selected');
+                ind.textContent = '☐';
+              } else {
+                qState.selected.add(opt.label);
+                optBtn.classList.add('selected');
+                ind.textContent = '☑';
+              }
+            } else {
+              qState.selected.clear();
+              qState.selected.add(opt.label);
+              optsWrap.querySelectorAll('.question-opt-btn').forEach((b) => {
+                b.classList.remove('selected');
+                const i = b.querySelector('.opt-indicator');
+                if (i) i.textContent = '○';
+              });
+              optBtn.classList.add('selected');
+              ind.textContent = '●';
+            }
+            updateDlgSubmitState();
+          }
+        }, ind, content);
+        optsWrap.append(optBtn);
+      }
+      qBlock.append(optsWrap);
+    }
+
+    const customInp = el('input', {
+      type: 'text',
+      class: 'question-custom-input',
+      placeholder: q.options?.length ? 'Or write your own answer / details…' : 'Write your answer here…',
+      oninput: () => updateDlgSubmitState(),
+      onkeydown: (e) => {
+        if (e.key === 'Enter' && !e.shiftKey) {
+          e.preventDefault();
+          if (submitBtn && !submitBtn.disabled) submitBtn.click();
+        }
+      }
+    });
+    qState.customInput = customInp;
+    qBlock.append(el('div', { class: 'question-custom-wrap' }, customInp));
+    bodyEl.append(qBlock);
+  }
+
+  function updateDlgSubmitState() {
+    let hasAny = false;
+    for (const [_, s] of stateByQ) {
+      if (s.selected.size > 0 || (s.customInput?.value && s.customInput.value.trim())) {
+        hasAny = true;
+        break;
+      }
+    }
+    if (submitBtn) {
+      submitBtn.disabled = !hasAny;
+      submitBtn.textContent = 'Submit Answer';
+    }
+  }
+  updateDlgSubmitState();
+
+  const qTargetId = meta.toolCallId || meta.id;
+
+  if (submitBtn) {
+    submitBtn.onclick = async (ev) => {
+      ev.preventDefault();
+      submitBtn.disabled = true;
+      submitBtn.textContent = 'Submitting…';
+      if (skipBtn) skipBtn.disabled = true;
+
+      const answers = [];
+      let primaryAnswer = '';
+      for (const [qId, s] of stateByQ) {
+        const qBlock = bodyEl.querySelector('.question-block[data-qid="' + qId + '"]');
+        const qTitle = qBlock?.querySelector('.question-text')?.textContent || 'Question';
+        const selected = Array.from(s.selected);
+        const custom = s.customInput ? s.customInput.value.trim() : '';
+        const combined = selected.length ? selected.join(', ') + (custom ? ' (' + custom + ')' : '') : custom;
+        if (!primaryAnswer) primaryAnswer = combined;
+        answers.push({
+          id: qId,
+          question: qTitle,
+          selectedOptions: selected,
+          customText: custom,
+          answer: combined
+        });
+      }
+
+      try {
+        await api('/questions/' + encodeURIComponent(qTargetId) + '/answer', { method: 'POST', body: { answers } });
+        // Immediately update matching in-chat widget to show user's answer!
+        const inChatWidgets = document.querySelectorAll('.chat-question-card');
+        for (const w of inChatWidgets) {
+          if (w.dataset.callId === meta.id || w.dataset.callId === meta.toolCallId) {
+            applyChatQuestionState(w, {
+              status: 'done',
+              resultText: primaryAnswer
+            });
+          }
+        }
+        closeQuestionDialog();
+      } catch (e) {
+        toast(e.message || 'Failed to submit answer', true);
+        submitBtn.disabled = false;
+        submitBtn.textContent = 'Submit Answer';
+        if (skipBtn) skipBtn.disabled = false;
+      }
+    };
+  }
+
+  if (skipBtn) {
+    skipBtn.onclick = async (ev) => {
+      ev.preventDefault();
+      skipBtn.disabled = true;
+      skipBtn.textContent = 'Skipping…';
+      try {
+        await api('/questions/' + encodeURIComponent(qTargetId) + '/cancel', { method: 'POST', body: { reason: 'User skipped question.' } });
+      } catch (e) {
+        console.warn('Skip error:', e.message);
+      }
+      const inChatWidgets = document.querySelectorAll('.chat-question-card');
+      for (const w of inChatWidgets) {
+        if (w.dataset.callId === meta.id || w.dataset.callId === meta.toolCallId) {
+          applyChatQuestionState(w, { status: 'cancelled' });
+        }
+      }
+      closeQuestionDialog();
+    };
+  }
+
+  if (closeBtn) {
+    closeBtn.onclick = (ev) => {
+      ev.preventDefault();
+      if (skipBtn) skipBtn.click();
+      else closeQuestionDialog();
+    };
+  }
+
+  dlg.oncancel = () => {
+    // When closed with Esc
+    api('/questions/' + encodeURIComponent(qTargetId) + '/cancel', { method: 'POST', body: { reason: 'User closed dialog.' } }).catch(() => {});
+    const inChatWidgets = document.querySelectorAll('.chat-question-card');
+    for (const w of inChatWidgets) {
+      if (w.dataset.callId === meta.id || w.dataset.callId === meta.toolCallId) {
+        applyChatQuestionState(w, { status: 'cancelled' });
+      }
+    }
+    activeQuestionMeta = null;
+  };
+
+  try {
+    if (!dlg.open) dlg.showModal();
+  } catch {}
+}
+
+function closeQuestionDialog() {
+  const dlg = $('#dlg-question');
+  if (dlg && dlg.open) dlg.close();
+  activeQuestionMeta = null;
+}
+
 /* ───────────────────────── Auth (login / users) ───────────────────────── */
 
 async function fetchAuthStatus() {
@@ -3646,6 +4117,7 @@ async function submitLogin(e) {
 async function afterLogin() {
   renderUserChip();
   connectApprovalStream();
+  connectQuestionStream();
   await Promise.all([loadSettings(), loadPrompts(), loadConversations(), loadMcp()]);
   applyAdminUi();
   fillModelOptions(state.settings.model ? [state.settings.model] : []);
@@ -3700,6 +4172,7 @@ async function doLogout() {
   try { await api('/auth/logout', { method: 'POST', __noAuthGate: true }); } catch { /* ignore */ }
   // Drop the live streams/pollers tied to the old session before the overlay.
   disconnectApprovalStream();
+  disconnectQuestionStream();
   if (authPollTimer) { clearInterval(authPollTimer); authPollTimer = null; }
   state.currentUser = null;
   state.conversations = [];
@@ -3852,13 +4325,6 @@ function wire() {
     renderConvList();
     updateChatSub();
     toast('Persona updated');
-  };
-
-  $('#sel-model').onchange = async (e) => {
-    if (!state.currentId) return;
-    const c = await api(`/conversations/${state.currentId}`, { method: 'PATCH', body: { model: e.target.value || null } });
-    Object.assign(current(), c);
-    updateChatSub();
   };
 
   $('#composer').onsubmit = (e) => {

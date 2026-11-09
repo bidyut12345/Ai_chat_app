@@ -1,13 +1,15 @@
 /**
  * Built-in MCP server: `windows` (Windows desktop automation).
  *
- * Window management, launching apps, keyboard / mouse input, clipboard and
- * screenshots. Every tool runs a short PowerShell script; the model's text
- * travels in environment variables, so it is never spliced into the script.
+ * Window management, launching apps, UI Automation (UIA) inspection, keyboard / mouse input,
+ * clipboard and screenshots.
  *
- * Screenshots are saved into the chat's working folder and the path is
- * returned — the tool result itself stays text, so the model does not receive
- * the pixels.
+ * Guidance for coding agents:
+ * - Prefer write file -> open by path over simulating keystrokes. It is deterministic and cannot corrupt an unrelated tab.
+ * - Treat launch_app handle as advisory until confirmed by find_window.
+ * - Enumerate windows before mutating, never only after.
+ * - Never type into a document with unsaved changes without an explicit flag (allow_unsaved: true).
+ * - Call uia_inspect after every mutation to confirm the intended effect.
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -91,7 +93,7 @@ $screens = @([System.Windows.Forms.Screen]::AllScreens | ForEach-Object {
     name: 'list_windows',
     readOnly: true,
     description:
-      'List the visible top-level windows: handle, process, title, state and position. Use the handle (or a distinctive part of the title) with focus_window, window_action and screenshot.',
+      'List the visible top-level windows: handle, process, title, class name, state and position. Always call list_windows or find_window before mutating.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -108,38 +110,173 @@ foreach ($w in [RWin]::ListWindows()) {
     pid = $w.Pid
     process = $w.Process
     title = $w.Title
+    class_name = $w.ClassName
     state = $w.State
     x = $w.X
     y = $w.Y
     width = $w.Width
     height = $w.Height
     foreground = $w.Foreground
+    is_dirty = $w.IsDirty
   } | ConvertTo-Json -Compress
 }`,
         { timeout: 45000 }
       );
       const f = str(args.filter).trim().toLowerCase();
-      const kept = f ? rows.filter((r) => `${r.title} ${r.process}`.toLowerCase().includes(f)) : rows;
+      const kept = f ? rows.filter((r) => `${r.title} ${r.process} ${r.class_name}`.toLowerCase().includes(f)) : rows;
       if (!kept.length) return f ? `No window matches "${args.filter}".` : 'No visible windows.';
       kept.sort((a, b) => String(a.title).localeCompare(String(b.title)));
       const lines = kept.map((r) => {
         const size = `${r.width}x${r.height} at ${r.x},${r.y}`;
         const mark = r.foreground ? '  [focused]' : '';
-        return `handle ${r.handle}  pid ${r.pid}  ${r.process}  ${stateOf(r.state)}  ${size}  ${r.title}${mark}`;
+        const dirtyMark = r.is_dirty ? '  [unsaved changes]' : '';
+        return `handle ${r.handle}  pid ${r.pid}  ${r.process}  (${r.class_name})  ${stateOf(r.state)}  ${size}  ${r.title}${mark}${dirtyMark}`;
       });
       return `${kept.length} window(s):\n${lines.join('\n')}`;
     }
   },
 
   {
-    name: 'focus_window',
-    destructive: true,
-    description: 'Bring a window to the front so it receives keyboard and mouse input. Match it by handle (preferred) or by part of its title.',
+    name: 'find_window',
+    readOnly: true,
+    description:
+      'Find open top-level windows matching title substring, class name, or process ID. Returns fresh handles. Treat launch_app handles as advisory until confirmed by find_window.',
     inputSchema: {
       type: 'object',
       properties: {
-        handle: { type: 'number', description: 'Window handle from list_windows.' },
-        title: { type: 'string', description: 'Window title, or a distinctive part of it.' }
+        title_contains: { type: 'string', description: 'Substring to match in window title (case-insensitive).' },
+        class_name: { type: 'string', description: 'Match class name (e.g. "Notepad", "ApplicationFrameWindow").' },
+        pid: { type: 'number', description: 'Process ID that owns the window.' }
+      }
+    },
+    async handler(args) {
+      requireWindows();
+      const rows = runPsLines(
+        `${WINLIB}
+foreach ($w in [RWin]::ListWindows()) {
+  [pscustomobject]@{
+    handle = $w.Handle
+    pid = $w.Pid
+    process = $w.Process
+    title = $w.Title
+    class_name = $w.ClassName
+    state = $w.State
+    x = $w.X
+    y = $w.Y
+    width = $w.Width
+    height = $w.Height
+    foreground = $w.Foreground
+    is_dirty = $w.IsDirty
+  } | ConvertTo-Json -Compress
+}`,
+        { timeout: 30000 }
+      );
+      const titleSub = str(args.title_contains).trim().toLowerCase();
+      const classSub = str(args.class_name).trim().toLowerCase();
+      const targetPid = Number(args.pid) || 0;
+
+      const kept = rows.filter((r) => {
+        if (titleSub && !String(r.title).toLowerCase().includes(titleSub)) return false;
+        if (classSub && !String(r.class_name).toLowerCase().includes(classSub)) return false;
+        if (targetPid && r.pid !== targetPid) return false;
+        return true;
+      });
+
+      return {
+        count: kept.length,
+        windows: kept.map((r) => ({
+          handle: r.handle,
+          pid: r.pid,
+          process: r.process,
+          title: r.title,
+          class_name: r.class_name,
+          state: stateOf(r.state),
+          rect: [r.x, r.y, r.width, r.height],
+          foreground: r.foreground,
+          is_dirty: r.is_dirty
+        }))
+      };
+    }
+  },
+
+  {
+    name: 'uia_inspect',
+    readOnly: true,
+    description:
+      'Inspect UI elements and control values using Windows UI Automation (UIA). Reads control names, types, values (ValuePattern/TextPattern), and coordinates. Primary verification primitive to verify UI state without screenshots.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        handle: { type: 'number', description: 'Window handle from list_windows or find_window (required).' },
+        scope: { type: 'string', enum: ['descendants', 'children', 'element'], description: 'Traversal scope. Default descendants.' },
+        control_types: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Filter by control type, e.g. ["Text", "Button", "Edit", "Document", "ListItem"].'
+        },
+        name_contains: { type: 'string', description: 'Filter elements whose name contains this substring (case-insensitive).' },
+        max_nodes: { type: 'number', description: 'Maximum elements to return. Default 200.' },
+        text_only: { type: 'boolean', description: 'Return flattened visible text instead of element tree. Default false.' }
+      },
+      required: ['handle']
+    },
+    async handler(args) {
+      requireWindows();
+      const handle = Number(args.handle) || 0;
+      if (!handle) throw new PolicyError('handle is required for uia_inspect');
+      const scope = ['children', 'element'].includes(args.scope) ? args.scope : 'descendants';
+      const maxNodes = Math.min(Math.max(Number(args.max_nodes) || 200, 1), 1000);
+      const textOnly = args.text_only === true || str(args.text_only) === 'true';
+      const types = Array.isArray(args.control_types) ? args.control_types.join(',') : '';
+      const nameSub = str(args.name_contains).trim();
+
+      const res = runPs(
+        `${WINLIB}${FIND_WINDOW}
+$h = Resolve-Handle -Handle ([long]$env:RI_HANDLE) -Title ''
+$types = @()
+if ($env:RI_TYPES) { $types = $env:RI_TYPES.Split(',') }
+$res = [RWin]::InspectUia($h, $env:RI_SCOPE, $types, $env:RI_NAME_SUB, [int]$env:RI_MAX_NODES, ($env:RI_TEXT_ONLY -eq '1'))
+$hint = if ($res.count -eq 0 -and -not $res.error) { 'No matching UIA nodes found for filter' } else { $null }
+[pscustomobject]@{
+  count = $res.count
+  nodes = $res.nodes
+  text = $res.text
+  error = $res.error
+  hint = $hint
+} | ConvertTo-Json -Depth 5 -Compress`,
+        {
+          env: {
+            RI_HANDLE: String(handle),
+            RI_SCOPE: scope,
+            RI_MAX_NODES: String(maxNodes),
+            RI_TEXT_ONLY: textOnly ? '1' : '0',
+            RI_TYPES: types,
+            RI_NAME_SUB: nameSub
+          },
+          json: true,
+          timeout: 45000
+        }
+      );
+
+      return {
+        count: res.count || 0,
+        nodes: res.nodes || [],
+        ...(textOnly ? { text: res.text || '' } : {}),
+        error: res.error || null,
+        ...(res.hint ? { hint: res.hint } : {})
+      };
+    }
+  },
+
+  {
+    name: 'focus_window',
+    destructive: true,
+    description: 'Bring a window to the front so it receives keyboard and mouse input. Match it by handle (preferred) or by unique title.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        handle: { type: 'number', description: 'Window handle from list_windows or find_window.' },
+        title: { type: 'string', description: 'Window title (must match uniquely if handle is omitted).' }
       }
     },
     async handler(args) {
@@ -149,11 +286,11 @@ foreach ($w in [RWin]::ListWindows()) {
       if (!handle && !title) throw new PolicyError('Give a window handle or a title.');
       const res = runPs(
         `${WINLIB}${FIND_WINDOW}${FOCUS_TARGET}
-$h = Focus-Target -Handle ([long]$env:RI_HANDLE) -Title $env:RI_TITLE
-[pscustomobject]@{ handle = $h.ToInt64(); title = [RWin]::TitleOf($h) } | ConvertTo-Json -Compress`,
+$h = Focus-Target -Handle ([long]$env:RI_HANDLE) -Title $env:RI_TITLE -AllowUnsaved
+[pscustomobject]@{ handle = $h.ToInt64(); title = [RWin]::TitleOf($h); class_name = [RWin]::ClassNameOf($h) } | ConvertTo-Json -Compress`,
         { env: { RI_HANDLE: String(handle), RI_TITLE: title }, json: true, timeout: 30000 }
       );
-      return `Focused "${res.title}"  handle ${res.handle}`;
+      return `Focused "${res.title}" (class: ${res.class_name}, handle ${res.handle})`;
     }
   },
 
@@ -161,7 +298,7 @@ $h = Focus-Target -Handle ([long]$env:RI_HANDLE) -Title $env:RI_TITLE
     name: 'window_action',
     destructive: true,
     description:
-      'Change one window: minimize, maximize, restore, close, move to x/y, or resize to width/height. Match the window by handle (preferred) or part of its title.',
+      'Change one window: minimize, maximize, restore, close, move to x/y, or resize to width/height. Match the window by handle (preferred) or unique title.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -242,13 +379,15 @@ if ($alive) {
     name: 'launch_app',
     destructive: true,
     description:
-      'Start a program, open a document or open a URL with its default handler. When the new program shows a window, its handle is returned so you can type into it straight away. Use the shell tools for commands that should run in a terminal.',
+      'Start a program, document or URL. Resolves the real UI window, supporting modern UWP/Store apps and ApplicationFrameHost. Note: Prefer write file -> open by path over simulating keystrokes. Treat launch_app handle as advisory until confirmed by find_window.',
     inputSchema: {
       type: 'object',
       properties: {
         target: { type: 'string', description: 'Executable path, document path or URL.' },
         arguments: { type: 'string', description: 'Command line arguments for the program, as one string.' },
-        working_dir: { type: 'string', description: 'Working directory for the new process.' }
+        working_dir: { type: 'string', description: 'Working directory for the new process.' },
+        timeout_ms: { type: 'number', description: 'Timeout in milliseconds to wait for the UI window (default 3000).' },
+        new_instance: { type: 'boolean', description: 'Force a separate process instance if supported (default false).' }
       },
       required: ['target']
     },
@@ -257,54 +396,126 @@ if ($alive) {
       const target = str(args.target).trim();
       if (!target) throw new PolicyError('target is required.');
       const cwd = args.working_dir ? resolveCwd(args.working_dir) : '';
+      const timeoutMs = Math.min(Math.max(Number(args.timeout_ms) || 3000, 500), 30000);
+      const newInstance = args.new_instance === true || str(args.new_instance) === 'true';
+
       const res = runPs(
         `${WINLIB}
-$before = @([RWin]::ListWindows() | ForEach-Object { $_.Handle })
-$start = @{ FilePath = $env:RI_TARGET; PassThru = $true }
-if ($env:RI_ARGS) { $start['ArgumentList'] = $env:RI_ARGS }
-if ($env:RI_CWD) { $start['WorkingDirectory'] = $env:RI_CWD }
-$p = Start-Process @start
-$deadline = (Get-Date).AddSeconds(8)
-$exe = [System.IO.Path]::GetFileNameWithoutExtension($env:RI_TARGET)
-$found = $null
-$fallback = $null
-while ((Get-Date) -lt $deadline) {
-  Start-Sleep -Milliseconds 300
-  $new = @([RWin]::ListWindows() | Where-Object { $before -notcontains $_.Handle })
-  if ($new.Count -gt 0) {
-    # A console window belongs to conhost, not to the program: accept any new
-    # window whose title mentions the program we started.
-    if (-not $fallback) {
-      $fallback = $new | Where-Object { $exe -and $_.Title -ilike ('*' + $exe + '*') } | Select-Object -First 1
-    }
-    $mine = $new | Where-Object { $p -and $_.Pid -eq $p.Id } | Select-Object -First 1
-    if ($mine) { $found = $mine; break }
-  }
-  if ($p -and $p.HasExited) { break }
+$before = @([RWin]::ListWindows())
+$beforeHandles = @($before | ForEach-Object { $_.Handle })
+$target = $env:RI_TARGET
+$rawExe = [System.IO.Path]::GetFileNameWithoutExtension($target)
+$exe = if ($rawExe) { $rawExe.TrimEnd(':') } else { '' }
+$args = $env:RI_ARGS
+$newInstance = ($env:RI_NEW_INSTANCE -eq '1')
+if ($newInstance -and ($exe -ieq 'notepad')) {
+  if ($args -notmatch '/n\b') { $args = ('/n ' + $args).Trim() }
 }
-$matched = $true
-if (-not $found) { $found = $fallback; $matched = $false }
+
+$start = @{ FilePath = $target; PassThru = $true }
+if ($args) { $start['ArgumentList'] = $args }
+if ($env:RI_CWD) { $start['WorkingDirectory'] = $env:RI_CWD }
+$p = $null
+try {
+  $p = Start-Process @start
+} catch {
+  # If file path / URI protocol execution
+  Start-Process -FilePath $target
+}
+
+$timeoutMs = [int]$env:RI_TIMEOUT_MS
+if ($timeoutMs -le 0) { $timeoutMs = 3000 }
+$deadline = (Get-Date).AddMilliseconds($timeoutMs)
+
+$found = $null
+$reused = $false
+
+while ((Get-Date) -lt $deadline) {
+  Start-Sleep -Milliseconds 150
+  $now = @([RWin]::ListWindows())
+  $new = @($now | Where-Object { $beforeHandles -notcontains $_.Handle -and $_.Title -ne 'PopupHost' -and $_.ClassName -ne 'Microsoft.UI.Content.PopupWindowSiteBridge' })
+
+  if ($new.Count -gt 0) {
+    if ($p) {
+      $matchPid = $new | Where-Object { $_.Pid -eq $p.Id -and $_.Width -gt 50 } | Select-Object -First 1
+      if ($matchPid) { $found = $matchPid; break }
+    }
+    $matchName = $new | Where-Object { ($exe -and ($_.Process -ilike ('*' + $exe + '*') -or $_.Title -ilike ('*' + $exe + '*'))) -or $_.ClassName -ieq 'ApplicationFrameWindow' } | Select-Object -First 1
+    if ($matchName) { $found = $matchName; break }
+  }
+}
+
+if ($found -and -not [RWin]::IsWindowOnDefault($found.Handle)) {
+  $found = $null
+}
+
+if (-not $found) {
+  $existing = @([RWin]::ListWindows() | Where-Object { $exe -and ($_.Process -ilike ('*' + $exe + '*') -or $_.Title -ilike ('*' + $exe + '*')) }) | Select-Object -First 1
+  if ($existing) {
+    $found = $existing
+    $reused = $true
+  }
+} else {
+  $wasExisting = @($before | Where-Object { $_.Handle -eq $found.Handle }).Count -gt 0
+  if ($wasExisting) {
+    $reused = $true
+  } elseif ($p -and $p.Id -ne $found.Pid -and @($before | Where-Object { $_.Pid -eq $found.Pid }).Count -gt 0) {
+    $reused = $true
+  }
+}
+
+$handle = if ($found) { $found.Handle } else { 0 }
+$title = if ($found) { $found.Title } else { '' }
+$className = if ($found) { $found.ClassName } else { '' }
+$owningPid = if ($found) { $found.Pid } else { 0 }
+$reqPid = if ($p) { $p.Id } else { 0 }
+
 [pscustomobject]@{
-  pid = $(if ($p) { $p.Id } else { $null })
-  process = $(if ($p) { $p.ProcessName } else { $null })
-  target = $env:RI_TARGET
-  handle = $(if ($found) { $found.Handle } else { 0 })
-  title = $(if ($found) { $found.Title } else { '' })
-  window_pid = $(if ($found) { $found.Pid } else { 0 })
-  matched = $matched
-  exited = $(if ($p) { [bool]$p.HasExited } else { $true })
+  requested_pid = $reqPid
+  owning_pid = $owningPid
+  handle = $handle
+  class_name = $className
+  title = $title
+  reused_existing_instance = $reused
+  target = $target
 } | ConvertTo-Json -Compress`,
-        { env: { RI_TARGET: target, RI_ARGS: str(args.arguments), RI_CWD: cwd }, json: true, timeout: 30000 }
+        {
+          env: {
+            RI_TARGET: target,
+            RI_ARGS: str(args.arguments),
+            RI_CWD: cwd,
+            RI_TIMEOUT_MS: String(timeoutMs),
+            RI_NEW_INSTANCE: newInstance ? '1' : '0'
+          },
+          json: true,
+          timeout: timeoutMs + 15000
+        }
       );
-      const procName = res.process || res.target || 'app';
+
+      const procName = res.target;
+      const reusedNote = res.reused_existing_instance
+        ? '\n[reused_existing_instance: true - joined an existing session with user data! Keystrokes will be blocked without allow_unsaved: true]'
+        : '\n[reused_existing_instance: false]';
       if (res.handle) {
-        const owner = res.matched ? '' : ' (its window belongs to another process, e.g. a console host)';
-        return `Started ${procName} (pid ${res.pid}) for ${res.target}\nWindow: "${res.title}"  handle ${res.handle}${owner}`;
+        return {
+          requested_pid: res.requested_pid,
+          owning_pid: res.owning_pid,
+          handle: res.handle,
+          class_name: res.class_name,
+          title: res.title,
+          reused_existing_instance: !!res.reused_existing_instance,
+          summary: `Started ${procName} (requested pid ${res.requested_pid}, owning pid ${res.owning_pid})\nWindow: "${res.title}"  handle ${res.handle} (class: ${res.class_name})${reusedNote}`
+        };
       }
-      if (res.pid && !res.exited) {
-        return `Started ${procName} (pid ${res.pid}) for ${res.target}. It has no window yet — use list_windows to find it.`;
-      }
-      return `Opened ${res.target} with its default handler (no new window of its own — use list_windows).`;
+      return {
+        requested_pid: res.requested_pid,
+        owning_pid: res.owning_pid,
+        handle: 0,
+        class_name: '',
+        title: '',
+        reused_existing_instance: false,
+        summary: `Opened ${procName}. No visible UI window found within timeout — use find_window to locate it.`
+      };
     }
   },
 
@@ -312,12 +523,13 @@ if (-not $found) { $found = $fallback; $matched = $false }
     name: 'screenshot',
     readOnly: true,
     description:
-      'Save a PNG of the whole primary screen (or of one window) into the chat folder and return its path and size. Open the path yourself to look at it; the tool result is text only.',
+      'Save a PNG of the screen (or of one window) into the chat folder. Note: PNG is not visible to the model; use uia_inspect to verify UI state. Set annotate: true to draw coordinate grid lines.',
     inputSchema: {
       type: 'object',
       properties: {
         path: { type: 'string', description: 'Where to save the PNG, relative to the chat folder. Defaults to screenshot-<timestamp>.png.' },
-        handle: { type: 'number', description: 'Capture only this window (handle from list_windows). Omit for the whole screen.' }
+        handle: { type: 'number', description: 'Capture only this window (handle from list_windows). Omit for the whole screen.' },
+        annotate: { type: 'boolean', description: 'Draw coordinate grid overlay on the image. Default false.' }
       }
     },
     async handler(args) {
@@ -326,16 +538,18 @@ if (-not $found) { $found = $fallback; $matched = $false }
       const abs = resolvePath(rel, { mustExist: false });
       fs.mkdirSync(path.dirname(abs), { recursive: true });
       const handle = Number(args.handle) || 0;
+      const annotate = args.annotate === true || str(args.annotate) === 'true';
+
       const res = runPs(
-        `${WINLIB}
+        `${WINLIB}${FIND_WINDOW}
 Add-Type -AssemblyName System.Drawing
 Add-Type -AssemblyName System.Windows.Forms
 $h = [long]$env:RI_HANDLE
 if ($h -ne 0) {
-  if (-not [RWin]::IsWindow([IntPtr]$h)) { throw ('No window with handle ' + $h + ' any more. Run list_windows to get a fresh handle.') }
-  if ([RWin]::IsIconic([IntPtr]$h)) { throw 'That window is minimized, so there is nothing on screen to capture. Restore it first.' }
-  $rect = [RWin]::RectOf([IntPtr]$h)
-  if ($rect.Length -lt 4) { throw 'Could not read that window''s screen rectangle (it may be minimized or on another desktop).' }
+  $resolved = Resolve-Handle -Handle $h -Title ''
+  if ([RWin]::IsIconic([IntPtr]$resolved)) { throw 'That window is minimized, so there is nothing on screen to capture. Restore it first.' }
+  $rect = [RWin]::RectOf([IntPtr]$resolved)
+  if ($rect.Length -lt 4) { throw 'Could not read that window screen rectangle.' }
   $x = $rect[0]; $y = $rect[1]; $w = $rect[2]; $ht = $rect[3]
 } else {
   $b = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
@@ -350,14 +564,42 @@ try {
   $g.Dispose(); $bmp.Dispose()
   throw ('Could not read the screen (' + $_.Exception.Message + '). This happens when the desktop is locked or the screen is off; unlock it and try again.')
 }
+
+if ($env:RI_ANNOTATE -eq '1') {
+  $pen = New-Object System.Drawing.Pen ([System.Drawing.Color]::FromArgb(120, 0, 200, 255)), 1
+  $font = New-Object System.Drawing.Font 'Arial', 9
+  $brush = New-Object System.Drawing.SolidBrush ([System.Drawing.Color]::FromArgb(200, 0, 200, 255))
+  for ($gx = 100; $gx -lt $w; $gx += 100) { $g.DrawLine($pen, $gx, 0, $gx, $ht) }
+  for ($gy = 100; $gy -lt $ht; $gy += 100) { $g.DrawLine($pen, 0, $gy, $w, $gy) }
+  for ($gx = 100; $gx -lt $w; $gx += 200) {
+    for ($gy = 100; $gy -lt $ht; $gy += 200) {
+      $g.DrawString(('(' + $gx + ',' + $gy + ')'), $font, $brush, [float]($gx + 2), [float]($gy + 2))
+    }
+  }
+  $pen.Dispose(); $font.Dispose(); $brush.Dispose()
+}
+
 $bmp.Save($env:RI_PATH, [System.Drawing.Imaging.ImageFormat]::Png)
 $g.Dispose()
 $bmp.Dispose()
-[pscustomobject]@{ path = $env:RI_PATH; width = $w; height = $ht } | ConvertTo-Json -Compress`,
-        { env: { RI_PATH: abs, RI_HANDLE: String(handle) }, json: true, timeout: 30000 }
+[pscustomobject]@{
+  path = $env:RI_PATH
+  width = $w
+  height = $ht
+  readable = $true
+  annotated = ($env:RI_ANNOTATE -eq '1')
+} | ConvertTo-Json -Compress`,
+        { env: { RI_PATH: abs, RI_HANDLE: String(handle), RI_ANNOTATE: annotate ? '1' : '0' }, json: true, timeout: 30000 }
       );
       const bytes = fs.existsSync(abs) ? fs.statSync(abs).size : 0;
-      return `Saved ${res.width}x${res.height} PNG (${bytes} bytes)\n${res.path}${handle ? `\nwindow handle ${handle}` : ''}`;
+      return {
+        path: res.path,
+        width: res.width,
+        height: res.height,
+        readable: true,
+        annotated: res.annotated,
+        summary: `Saved ${res.width}x${res.height} PNG (${bytes} bytes)${annotate ? ' [annotated with coordinate grid]' : ''}\n${res.path}`
+      };
     }
   },
 
@@ -365,13 +607,16 @@ $bmp.Dispose()
     name: 'send_keys',
     destructive: true,
     description:
-      'Send keystrokes to a window (or to whatever has focus) using SendKeys syntax: ^s = Ctrl+S, %{F4} = Alt+F4, {ENTER}, {TAB}, {ESC}. Use type_text for ordinary text.',
+      'Send keystrokes to a window using SendKeys syntax: ^s = Ctrl+S, %{F4} = Alt+F4, {ENTER}, {TAB}, {ESC}. Require handle. Fails closed if the window has unsaved changes unless allow_unsaved: true.',
     inputSchema: {
       type: 'object',
       properties: {
         keys: { type: 'string', description: 'SendKeys string, e.g. "^s" or "{ENTER}".' },
-        handle: { type: 'number', description: 'Focus this window first (handle from list_windows).' },
-        title: { type: 'string', description: 'Focus the window with this title first.' }
+        handle: { type: 'number', description: 'Window handle from list_windows or find_window (strongly preferred).' },
+        title: { type: 'string', description: 'Window title (must match uniquely if handle is omitted).' },
+        allow_unsaved: { type: 'boolean', description: 'Allow typing into a window with unsaved changes. Default false.' },
+        dry_run: { type: 'boolean', description: 'Resolve target window without typing. Default false.' },
+        expect: { type: 'string', description: 'Post-condition: verify control text contains this string after typing.' }
       },
       required: ['keys']
     },
@@ -381,16 +626,74 @@ $bmp.Dispose()
       if (!keys) throw new PolicyError('keys is required.');
       const handle = Number(args.handle) || 0;
       const title = str(args.title).trim();
+      const allowUnsaved = args.allow_unsaved === true || str(args.allow_unsaved) === 'true';
+      const dryRun = args.dry_run === true || str(args.dry_run) === 'true';
+      const expect = str(args.expect);
+
       const res = runPs(
         `${WINLIB}${FIND_WINDOW}${FOCUS_TARGET}
 Add-Type -AssemblyName System.Windows.Forms
-$h = Focus-Target -Handle ([long]$env:RI_HANDLE) -Title $env:RI_TITLE
-[System.Windows.Forms.SendKeys]::SendWait($env:RI_KEYS)
-$name = if ($h -eq [IntPtr]::Zero) { [RWin]::ForegroundTitle() } else { [RWin]::TitleOf($h) }
-[pscustomobject]@{ title = $name } | ConvertTo-Json -Compress`,
-        { env: { RI_KEYS: keys, RI_HANDLE: String(handle), RI_TITLE: title }, json: true, timeout: 30000 }
+$allowUnsaved = ($env:RI_ALLOW_UNSAVED -eq '1')
+$dryRun = ($env:RI_DRY_RUN -eq '1')
+$h = Focus-Target -Handle ([long]$env:RI_HANDLE) -Title $env:RI_TITLE -AllowUnsaved:$allowUnsaved
+
+$targetTitle = if ($h -eq [IntPtr]::Zero) { [RWin]::ForegroundTitle() } else { [RWin]::TitleOf($h) }
+$targetClass = if ($h -eq [IntPtr]::Zero) { '' } else { [RWin]::ClassNameOf($h) }
+
+if ($dryRun) {
+  [pscustomobject]@{
+    dry_run = $true
+    handle = $h.ToInt64()
+    title = $targetTitle
+    class_name = $targetClass
+    typed = $false
+  } | ConvertTo-Json -Compress
+  exit 0
+}
+
+if ($targetClass -ieq 'ApplicationFrameWindow' -or $targetTitle -ilike '*Calculator*') {
+  if (-not [RWin]::TryUiaInvokeCalc($h.ToInt64(), $env:RI_KEYS)) {
+    [RWin]::SendKeysWait($env:RI_KEYS)
+  }
+} else {
+  [RWin]::SendKeysWait($env:RI_KEYS)
+}
+Start-Sleep -Milliseconds 120
+
+$actual = ''
+$matched = $null
+if ($env:RI_EXPECT) {
+  $actual = [RWin]::ReadCurrentText($h.ToInt64())
+  $matched = $actual.Contains($env:RI_EXPECT)
+}
+
+[pscustomobject]@{
+  handle = $h.ToInt64()
+  title = $targetTitle
+  typed = $true
+  expect = $env:RI_EXPECT
+  matched = $matched
+  actual = $actual
+} | ConvertTo-Json -Compress`,
+        {
+          env: {
+            RI_KEYS: keys,
+            RI_HANDLE: String(handle),
+            RI_TITLE: title,
+            RI_ALLOW_UNSAVED: allowUnsaved ? '1' : '0',
+            RI_DRY_RUN: dryRun ? '1' : '0',
+            RI_EXPECT: expect
+          },
+          json: true,
+          timeout: 30000
+        }
       );
-      return `Sent ${keys.length} character(s) of keystrokes to "${res.title}".`;
+
+      if (res.dry_run) {
+        return `Dry run: target window resolved to "${res.title}" (handle ${res.handle}, class: ${res.class_name}). No keystrokes were sent.`;
+      }
+      const expNote = expect ? `\nExpectation check: matched=${res.matched} (expected: "${expect}", actual: "${res.actual}")` : '';
+      return `Sent ${keys.length} character(s) of keystrokes to "${res.title}".${expNote}`;
     }
   },
 
@@ -398,13 +701,16 @@ $name = if ($h -eq [IntPtr]::Zero) { [RWin]::ForegroundTitle() } else { [RWin]::
     name: 'type_text',
     destructive: true,
     description:
-      'Type literal text into the focused window (or focus a window first). Newlines become Enter. Special characters are escaped for you, so this is the safe way to type a sentence.',
+      'Type literal text into the focused window. Require handle. Special characters are escaped for you. Fails closed if the window has unsaved changes unless allow_unsaved: true.',
     inputSchema: {
       type: 'object',
       properties: {
         text: { type: 'string', description: 'Text to type.' },
-        handle: { type: 'number', description: 'Focus this window first (handle from list_windows).' },
-        title: { type: 'string', description: 'Focus the window with this title first.' }
+        handle: { type: 'number', description: 'Window handle from list_windows or find_window (strongly preferred).' },
+        title: { type: 'string', description: 'Window title (must match uniquely if handle is omitted).' },
+        allow_unsaved: { type: 'boolean', description: 'Allow typing into a window with unsaved changes. Default false.' },
+        dry_run: { type: 'boolean', description: 'Resolve target window without typing. Default false.' },
+        expect: { type: 'string', description: 'Post-condition: verify control text contains this string after typing.' }
       },
       required: ['text']
     },
@@ -414,16 +720,74 @@ $name = if ($h -eq [IntPtr]::Zero) { [RWin]::ForegroundTitle() } else { [RWin]::
       if (!text) throw new PolicyError('text is required.');
       const handle = Number(args.handle) || 0;
       const title = str(args.title).trim();
+      const allowUnsaved = args.allow_unsaved === true || str(args.allow_unsaved) === 'true';
+      const dryRun = args.dry_run === true || str(args.dry_run) === 'true';
+      const expect = str(args.expect);
+
       const res = runPs(
         `${WINLIB}${FIND_WINDOW}${FOCUS_TARGET}
 Add-Type -AssemblyName System.Windows.Forms
-$h = Focus-Target -Handle ([long]$env:RI_HANDLE) -Title $env:RI_TITLE
-[System.Windows.Forms.SendKeys]::SendWait($env:RI_KEYS)
-$name = if ($h -eq [IntPtr]::Zero) { [RWin]::ForegroundTitle() } else { [RWin]::TitleOf($h) }
-[pscustomobject]@{ title = $name } | ConvertTo-Json -Compress`,
-        { env: { RI_KEYS: sendKeysLiteral(text), RI_HANDLE: String(handle), RI_TITLE: title }, json: true, timeout: 30000 }
+$allowUnsaved = ($env:RI_ALLOW_UNSAVED -eq '1')
+$dryRun = ($env:RI_DRY_RUN -eq '1')
+$h = Focus-Target -Handle ([long]$env:RI_HANDLE) -Title $env:RI_TITLE -AllowUnsaved:$allowUnsaved
+
+$targetTitle = if ($h -eq [IntPtr]::Zero) { [RWin]::ForegroundTitle() } else { [RWin]::TitleOf($h) }
+$targetClass = if ($h -eq [IntPtr]::Zero) { '' } else { [RWin]::ClassNameOf($h) }
+
+if ($dryRun) {
+  [pscustomobject]@{
+    dry_run = $true
+    handle = $h.ToInt64()
+    title = $targetTitle
+    class_name = $targetClass
+    typed = $false
+  } | ConvertTo-Json -Compress
+  exit 0
+}
+
+if ($targetClass -ieq 'ApplicationFrameWindow' -or $targetTitle -ilike '*Calculator*') {
+  if (-not [RWin]::TryUiaInvokeCalc($h.ToInt64(), $env:RI_KEYS)) {
+    [RWin]::SendKeysWait($env:RI_KEYS)
+  }
+} else {
+  [RWin]::SendKeysWait($env:RI_KEYS)
+}
+Start-Sleep -Milliseconds 120
+
+$actual = ''
+$matched = $null
+if ($env:RI_EXPECT) {
+  $actual = [RWin]::ReadCurrentText($h.ToInt64())
+  $matched = $actual.Contains($env:RI_EXPECT)
+}
+
+[pscustomobject]@{
+  handle = $h.ToInt64()
+  title = $targetTitle
+  typed = $true
+  expect = $env:RI_EXPECT
+  matched = $matched
+  actual = $actual
+} | ConvertTo-Json -Compress`,
+        {
+          env: {
+            RI_KEYS: sendKeysLiteral(text),
+            RI_HANDLE: String(handle),
+            RI_TITLE: title,
+            RI_ALLOW_UNSAVED: allowUnsaved ? '1' : '0',
+            RI_DRY_RUN: dryRun ? '1' : '0',
+            RI_EXPECT: expect
+          },
+          json: true,
+          timeout: 30000
+        }
       );
-      return `Typed ${text.length} character(s) into "${res.title}".`;
+
+      if (res.dry_run) {
+        return `Dry run: target window resolved to "${res.title}" (handle ${res.handle}, class: ${res.class_name}). No keystrokes were sent.`;
+      }
+      const expNote = expect ? `\nExpectation check: matched=${res.matched} (expected: "${expect}", actual: "${res.actual}")` : '';
+      return `Typed ${text.length} character(s) into "${res.title}".${expNote}`;
     }
   },
 
