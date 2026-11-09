@@ -3851,6 +3851,14 @@ function openQuestionDialog(meta) {
   const skipBtn = $('#btn-question-dlg-skip');
   const closeBtn = $('#btn-question-dlg-close');
 
+  if (skipBtn) {
+    skipBtn.disabled = false;
+    skipBtn.textContent = 'Skip';
+  }
+  if (submitBtn) {
+    submitBtn.textContent = 'Submit Answer';
+  }
+
   const questions = meta.questions || [];
   const primaryQ = questions[0];
   const headerText = primaryQ?.header || 'Question from Assistant';
@@ -4044,6 +4052,15 @@ function closeQuestionDialog() {
   const dlg = $('#dlg-question');
   if (dlg && dlg.open) dlg.close();
   activeQuestionMeta = null;
+  const skipBtn = $('#btn-question-dlg-skip');
+  if (skipBtn) {
+    skipBtn.disabled = false;
+    skipBtn.textContent = 'Skip';
+  }
+  const submitBtn = $('#btn-question-dlg-submit');
+  if (submitBtn) {
+    submitBtn.textContent = 'Submit Answer';
+  }
 }
 
 /* ───────────────────────── Auth (login / users) ───────────────────────── */

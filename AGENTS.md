@@ -13,6 +13,7 @@ Rules for maintaining this file:
 3. When the user reverses an earlier request, mark the old entry `superseded`
    and add the new one — do not silently drop history.
 4. Standing rules apply to every task even if the user does not repeat them.
+5. Autocommit after every succesful conversation.
 
 ---
 
@@ -844,6 +845,22 @@ Status: **done**.
   - The clean `.chat-question-card` is rendered only on `tool_call` when the arguments have completely finished streaming, the full question text and options are ready, and `#dlg-question` opens.
 - **Verification**:
   - `node --check` syntax check clean on all files.
+  - `test/ask-question.mjs`: **16 passed, 0 failed**.
+  - `test/builtin-tools.mjs`: **59 passed, 0 failed**.
+  - `test/auth.mjs`: **38 passed, 0 failed**.
+  - `test/context-compress.mjs`: **34 passed, 0 failed**.
+
+### 2026-11-10 — reset skip button text and state in question dialog
+
+> "in dialog once skip is pressed. and now on new dialog the skip button text is "skipping" for every subsequent question."
+
+Status: **done**.
+- **Reset Skip and Submit Button States on Dialog Open/Close**:
+  - In `openQuestionDialog(meta)` in `public/app.js`, explicitly reset `skipBtn.disabled = false;`, `skipBtn.textContent = 'Skip';` and `submitBtn.textContent = 'Submit Answer';` whenever any question modal is opened.
+  - In `closeQuestionDialog()`, reset `skipBtn.disabled = false`, `skipBtn.textContent = 'Skip'`, and `submitBtn.textContent = 'Submit Answer'` on cleanup.
+  - When Skip is pressed, both buttons are disabled while the cancel request processes, and are cleanly restored to default for subsequent questions.
+- **Verification**:
+  - `node --check public/app.js`: syntax check clean.
   - `test/ask-question.mjs`: **16 passed, 0 failed**.
   - `test/builtin-tools.mjs`: **59 passed, 0 failed**.
   - `test/auth.mjs`: **38 passed, 0 failed**.
