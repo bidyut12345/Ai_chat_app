@@ -212,7 +212,12 @@ export async function callTool(qualifiedName, args, timeoutMs = 60000, signal = 
   }
   if (signal?.aborted) { const e = new Error('cancelled'); e.name = 'AbortError'; throw e; }
   // SDK signature: callTool(params, resultSchema = CallToolResultSchema, options)
-  const opts = signal ? { signal } : undefined;
+  // Built-in tools (subagent, background, files, shell, etc.) are exempt from MCP SDK 60s request timeout
+  const reqTimeout = entry.builtin ? 2147483647 : (timeoutMs || 60000);
+  const opts = {
+    timeout: reqTimeout,
+    ...(signal ? { signal } : {})
+  };
   const call = entry.client.callTool({ name: tool, arguments: args ?? {} }, undefined, opts);
   // When cancelled, resolve quickly with an AbortError instead of waiting for
   // the (possibly long-running) tool or its timeout to settle.

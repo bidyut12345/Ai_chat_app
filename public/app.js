@@ -39,7 +39,9 @@ const state = {
   // and whether the admin has opened self-service registration.
   currentUser: null,
   needsSetup: false,
-  openRegistration: false
+  openRegistration: false,
+  messageQueue: [],
+  backgroundTasks: []
 };
 
 // Interval id for the running-generations poll (started once after login).
@@ -1029,7 +1031,7 @@ function renderMessage(m) {
 
     if (m.tool_calls) {
       for (const tc of parseToolCalls(m.tool_calls)) {
-        bubble.append(toolChip(tc));
+        appendToolToBubble(bubble, tc);
       }
     }
   }
@@ -1160,7 +1162,7 @@ function renderSegments(bubble, m, segs, files) {
     else if (s.t === 't') addText();
     else if (s.t === 'tc') {
       const tc = calls.get(s.id);
-      if (tc) bubble.append(toolChip(tc));
+      if (tc) appendToolToBubble(bubble, tc);
     } else if (s.t === 'f') {
       const f = files[s.i];
       if (f) bubble.append(fileChips([f]));
@@ -1440,6 +1442,421 @@ function isQuestionTool(name) {
   return name === 'ask_question' || name === 'AskUserQuestion' || name === 'ask_user_question';
 }
 
+function isSubagentTool(name) {
+  return name === 'subagent__run_task';
+}
+
+function isPlanTool(name) {
+  return name === 'subagent__plan_tasks';
+}
+
+function getOrCreateTaskRoadmapCard(bubble, initialTasks = []) {
+  let card = document.querySelector('#messages .task-roadmap-card') || (bubble ? bubble.querySelector('.task-roadmap-card') : null);
+  if (card) {
+    if (Array.isArray(initialTasks) && initialTasks.length) {
+      updateTaskPlanCard(card, initialTasks);
+    }
+    return card;
+  }
+  card = el('div', { class: 'tool-chip task-roadmap-card' });
+  const head = el('div', { class: 'trc-head' },
+    el('div', { class: 'trc-title' }, el('span', {}, '📋'), el('strong', {}, 'Task Breakdown & Execution')),
+    el('span', { class: 'trc-count' }, '0 steps')
+  );
+  const list = el('div', { class: 'trc-list' });
+  const progressWrap = el('div', { class: 'trc-progress-wrap' },
+    el('div', { class: 'trc-progress-bar' },
+      el('div', { class: 'trc-progress-fill', style: 'width: 0%;' })
+    ),
+    el('div', { class: 'trc-progress-meta' },
+      el('span', { class: 'trc-progress-text' }, '0 of 0 completed (0%)')
+    )
+  );
+  card.append(head, list, progressWrap);
+  bubble.append(card);
+  if (Array.isArray(initialTasks) && initialTasks.length) {
+    updateTaskPlanCard(card, initialTasks);
+  }
+  return card;
+}
+
+function updateTaskPlanCard(card, tasks) {
+  if (!card || !Array.isArray(tasks)) return;
+  const list = card.querySelector('.trc-list');
+  const countEl = card.querySelector('.trc-count');
+  if (!list) return;
+
+  for (let i = 0; i < tasks.length; i++) {
+    const t = tasks[i];
+    const stepId = String(t.id || ('step_' + (i + 1)));
+    let item = list.querySelector(`.trc-step-item[data-step-id="${stepId}"]`);
+    if (!item) {
+      item = createStepItemElement(t, i + 1);
+      list.append(item);
+    } else {
+      const titleEl = item.querySelector('.trc-step-title');
+      if (titleEl && t.title) titleEl.textContent = t.title;
+      const descEl = item.querySelector('.trc-step-desc');
+      if (descEl && t.description) descEl.textContent = t.description;
+    }
+  }
+
+  const allItems = list.querySelectorAll('.trc-step-item');
+  if (countEl) countEl.textContent = allItems.length + ' step' + (allItems.length === 1 ? '' : 's');
+  updateTaskRoadmapProgress(card);
+}
+
+function createStepItemElement(t, num) {
+  const stepId = String(t.id || ('step_' + num));
+  const item = el('details', { class: 'trc-step-item', 'data-step-id': stepId });
+  if (t.callId) item.dataset.callId = t.callId;
+
+  const cancelBtn = el('button', {
+    type: 'button',
+    class: 'tool-cancel trc-cancel-btn hidden',
+    title: 'Cancel this sub-agent task',
+    onclick: (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      const callId = item.dataset.callId;
+      if (callId) cancelToolCall(callId, cancelBtn);
+    }
+  }, 'cancel');
+
+  const statusBadge = el('span', { class: 'trc-step-status pending' }, 'Pending');
+
+  const summary = el('summary', { class: 'trc-step-summary' },
+    el('span', { class: 'trc-chevron' }, '▸'),
+    el('span', { class: 'trc-step-num' }, num + '.'),
+    el('span', { class: 'trc-step-title' }, t.title || ('Step ' + num)),
+    statusBadge,
+    cancelBtn
+  );
+
+  const body = el('div', { class: 'trc-step-body' });
+  if (t.description) {
+    body.append(el('div', { class: 'trc-step-desc' }, t.description));
+  }
+
+  const metaRow = el('div', { class: 'subagent-meta hidden' });
+  body.append(metaRow);
+
+  const feed = el('details', { class: 'subagent-feed' },
+    el('summary', {}, 'Live Activity & Thoughts'),
+    el('div', { class: 'subagent-feed-body' })
+  );
+  body.append(feed);
+
+  const filesEdited = el('div', { class: 'trc-files-edited hidden' },
+    el('span', { class: 'trc-files-label' }, '📁 Files Edited:'),
+    el('div', { class: 'trc-files-list', style: 'display:flex;flex-wrap:wrap;gap:4px;' })
+  );
+  body.append(filesEdited);
+
+  const summaryBox = el('div', { class: 'trc-summary-box hidden' },
+    el('div', { class: 'subagent-summary-label' }, 'Summary of Work Done:'),
+    el('div', { class: 'trc-summary-content' })
+  );
+  body.append(summaryBox);
+
+  item.append(summary, body);
+  return item;
+}
+
+function setStepSubagentStart(card, d) {
+  if (!card) return;
+  const list = card.querySelector('.trc-list');
+  if (!list) return;
+
+  let step = d.call_id ? list.querySelector(`.trc-step-item[data-call-id="${d.call_id}"]`) : null;
+  if (!step) {
+    const normTitle = (d.title || '').toLowerCase().trim();
+    const items = list.querySelectorAll('.trc-step-item');
+    for (const it of items) {
+      const itTitle = (it.querySelector('.trc-step-title')?.textContent || '').toLowerCase().trim();
+      if (!it.dataset.callId && normTitle && (itTitle.includes(normTitle) || normTitle.includes(itTitle))) {
+        step = it;
+        break;
+      }
+    }
+  }
+  if (!step) {
+    step = list.querySelector('.trc-step-item:not(.is-done):not(.is-running):not(.is-cancelled)');
+  }
+  if (!step) {
+    const stepCount = list.querySelectorAll('.trc-step-item').length;
+    step = createStepItemElement({ id: 'step_' + (stepCount + 1), title: d.title || ('Step ' + (stepCount + 1)) }, stepCount + 1);
+    list.append(step);
+    const countEl = card.querySelector('.trc-count');
+    if (countEl) countEl.textContent = (stepCount + 1) + ' step' + (stepCount === 0 ? '' : 's');
+  }
+
+  if (d.call_id) step.dataset.callId = d.call_id;
+  step.classList.remove('is-done', 'is-cancelled');
+  step.classList.add('is-running');
+  step.open = true;
+
+  const statusBadge = step.querySelector('.trc-step-status');
+  if (statusBadge) {
+    statusBadge.className = 'trc-step-status running';
+    statusBadge.textContent = '⏳ running…';
+  }
+
+  const cancelBtn = step.querySelector('.trc-cancel-btn');
+  if (cancelBtn) {
+    cancelBtn.classList.remove('hidden');
+    cancelBtn.disabled = false;
+    cancelBtn.textContent = 'cancel';
+    cancelBtn.onclick = (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      if (d.call_id) cancelToolCall(d.call_id, cancelBtn);
+    };
+  }
+
+  const titleEl = step.querySelector('.trc-step-title');
+  if (titleEl && d.title) titleEl.textContent = d.title;
+
+  const metaRow = step.querySelector('.subagent-meta');
+  if (metaRow) {
+    metaRow.innerHTML = '';
+    if (d.workspace) metaRow.append(el('span', { class: 'subagent-pill' }, '📁 ' + escapeHtml(d.workspace)));
+    if (d.tools?.length) metaRow.append(el('span', { class: 'subagent-pill' }, '🛠️ ' + d.tools.join(', ')));
+    metaRow.classList.toggle('hidden', !d.workspace && (!d.tools || !d.tools.length));
+  }
+
+  const feed = step.querySelector('.subagent-feed');
+  if (feed) feed.open = true;
+
+  updateTaskRoadmapProgress(card);
+}
+
+function appendSubagentThought(card, callId, text) {
+  if (!card || !text) return;
+  let step = callId ? card.querySelector(`.trc-step-item[data-call-id="${callId}"]`) : null;
+  if (!step) {
+    step = card.querySelector('.trc-step-item.is-running') || card.querySelector('.trc-step-item:not(.is-done)');
+  }
+  if (!step) return;
+  const feed = step.querySelector('.subagent-feed');
+  if (feed) feed.open = true;
+  const feedBody = step.querySelector('.subagent-feed-body');
+  if (!feedBody) return;
+  let thoughtEl = feedBody.querySelector('.subagent-thought:last-child');
+  if (!thoughtEl) {
+    thoughtEl = el('div', { class: 'subagent-thought' });
+    feedBody.append(thoughtEl);
+  }
+  thoughtEl.textContent += text;
+  feedBody.scrollTop = feedBody.scrollHeight;
+}
+
+function appendSubagentToolCall(card, callId, d) {
+  if (!card || !d) return;
+  let step = callId ? card.querySelector(`.trc-step-item[data-call-id="${callId}"]`) : null;
+  if (!step) {
+    step = card.querySelector('.trc-step-item.is-running') || card.querySelector('.trc-step-item:not(.is-done)');
+  }
+  if (!step) return;
+  const feed = step.querySelector('.subagent-feed');
+  if (feed) feed.open = true;
+  const feedBody = step.querySelector('.subagent-feed-body');
+  if (!feedBody) return;
+  const item = el('div', { class: 'subagent-tool-item', 'data-tool-id': d.tool_call_id },
+    el('div', { class: 'subagent-tool-head' },
+      el('span', {}, '⚡ ' + d.name),
+      el('span', { class: 'muted' }, 'running…')
+    )
+  );
+  feedBody.append(item);
+  feedBody.scrollTop = feedBody.scrollHeight;
+}
+
+function updateSubagentToolResult(card, callId, d) {
+  if (!card || !d) return;
+  let step = callId ? card.querySelector(`.trc-step-item[data-call-id="${callId}"]`) : null;
+  if (!step) {
+    step = card.querySelector('.trc-step-item.is-running') || card.querySelector('.trc-step-item:not(.is-done)');
+  }
+  if (!step) return;
+  const item = step.querySelector(`.subagent-tool-item[data-tool-id="${d.tool_call_id}"]`);
+  if (!item) return;
+  const head = item.querySelector('.subagent-tool-head span:last-child');
+  if (head) head.textContent = 'done (' + Math.round(d.duration_ms || 0) + 'ms)';
+  const out = typeof d.result === 'string' ? d.result : JSON.stringify(d.result, null, 2);
+  const resEl = el('div', { class: 'subagent-tool-res' }, out.slice(0, 400) + (out.length > 400 ? '…' : ''));
+  item.append(resEl);
+  const feedBody = step.querySelector('.subagent-feed-body');
+  if (feedBody) feedBody.scrollTop = feedBody.scrollHeight;
+}
+
+function setStepSubagentDone(card, d) {
+  if (!card) return;
+  let step = d.call_id ? card.querySelector(`.trc-step-item[data-call-id="${d.call_id}"]`) : null;
+  if (!step) {
+    step = card.querySelector('.trc-step-item.is-running') || card.querySelector('.trc-step-item:not(.is-done)');
+  }
+  if (!step) return;
+
+  step.classList.remove('is-running');
+  const isCancelled = !!d.cancelled;
+  if (isCancelled) {
+    step.classList.add('is-cancelled');
+  } else {
+    step.classList.add('is-done');
+  }
+
+  const cancelBtn = step.querySelector('.trc-cancel-btn');
+  if (cancelBtn) cancelBtn.classList.add('hidden');
+
+  const statusBadge = step.querySelector('.trc-step-status');
+  if (statusBadge) {
+    if (isCancelled) {
+      statusBadge.className = 'trc-step-status cancelled';
+      statusBadge.textContent = '✕ cancelled';
+    } else {
+      statusBadge.className = 'trc-step-status done';
+      statusBadge.textContent = d.duration_ms != null ? '✓ done (' + fmtToolDuration(d.duration_ms) + ')' : '✓ done';
+    }
+  }
+
+  const feed = step.querySelector('.subagent-feed');
+  if (feed) feed.open = false;
+
+  // Files edited
+  if (Array.isArray(d.files_modified) && d.files_modified.length) {
+    const filesSection = step.querySelector('.trc-files-edited');
+    const filesList = step.querySelector('.trc-files-list');
+    if (filesSection && filesList) {
+      filesList.innerHTML = '';
+      for (const f of d.files_modified) {
+        filesList.append(el('span', { class: 'trc-file-pill' }, f));
+      }
+      filesSection.classList.remove('hidden');
+    }
+  }
+
+  // Summary of work done
+  if (d.summary) {
+    const summaryBox = step.querySelector('.trc-summary-box');
+    const summaryContent = step.querySelector('.trc-summary-content');
+    if (summaryBox && summaryContent) {
+      summaryContent.innerHTML = renderMarkdown(d.summary);
+      summaryBox.classList.remove('hidden');
+    }
+  }
+
+  updateTaskRoadmapProgress(card);
+}
+
+function updateTaskRoadmapProgress(card) {
+  if (!card) return;
+  const items = Array.from(card.querySelectorAll('.trc-step-item'));
+  const total = items.length;
+  if (total === 0) return;
+
+  const doneCount = items.filter((it) => it.classList.contains('is-done')).length;
+  const runningCount = items.filter((it) => it.classList.contains('is-running')).length;
+  const cancelledCount = items.filter((it) => it.classList.contains('is-cancelled')).length;
+
+  const pct = Math.round((doneCount / total) * 100);
+  const fill = card.querySelector('.trc-progress-fill');
+  if (fill) fill.style.width = pct + '%';
+
+  const textEl = card.querySelector('.trc-progress-text');
+  if (textEl) {
+    if (runningCount > 0) {
+      const runningIdx = items.findIndex((it) => it.classList.contains('is-running')) + 1;
+      textEl.textContent = `${doneCount} of ${total} completed (${pct}%) · Step ${runningIdx} running…`;
+    } else if (doneCount === total && total > 0) {
+      textEl.textContent = `All ${total} tasks completed (100%) ✓`;
+    } else if (cancelledCount > 0) {
+      textEl.textContent = `${doneCount} of ${total} completed (${pct}%) · ${cancelledCount} cancelled`;
+    } else {
+      textEl.textContent = `${doneCount} of ${total} completed (${pct}%)`;
+    }
+  }
+}
+
+function attachSubagentToPlanCard(card, tc) {
+  if (!card || !tc) return;
+  const result = toolResultForCall(tc.id);
+  let args = {};
+  try {
+    args = JSON.parse(tc.function?.arguments || '{}');
+  } catch {}
+
+  const title = args.title || 'Sub-agent task';
+  const task = args.task || '';
+  const workspace = args.workspace || '';
+  const tools = Array.isArray(args.tools) ? args.tools : [];
+
+  let summary = '';
+  let filesModified = [];
+  const isCancelled = result?.tool_cancelled === 1;
+
+  if (result && result.content) {
+    const raw = result.content;
+    summary = raw;
+    const filesMatch = /\*\*Files Edited\*\*:\s*([^\n\r]+)/i.exec(raw);
+    if (filesMatch && filesMatch[1] && !filesMatch[1].toLowerCase().includes('none')) {
+      const rawFiles = filesMatch[1].split(',').map((s) => s.replace(/[`*]/g, '').trim()).filter(Boolean);
+      filesModified = rawFiles;
+    }
+    const summaryMatch = /\*\*Summary of Work Done\*\*:\s*([\s\S]*)$/i.exec(raw);
+    if (summaryMatch && summaryMatch[1]) {
+      summary = summaryMatch[1].trim();
+    }
+  }
+
+  setStepSubagentStart(card, {
+    call_id: tc.id,
+    title,
+    task,
+    workspace,
+    tools
+  });
+
+  setStepSubagentDone(card, {
+    call_id: tc.id,
+    title,
+    summary,
+    files_modified: filesModified,
+    duration_ms: result?.tool_duration_ms ?? null,
+    cancelled: isCancelled
+  });
+}
+
+function appendToolToBubble(bubble, tc) {
+  if (!tc) return;
+  const name = tc.function?.name || '';
+  if (isPlanTool(name) || isSubagentTool(name)) {
+    const card = getOrCreateTaskRoadmapCard(bubble);
+    if (isPlanTool(name)) {
+      let tasks = [];
+      try {
+        const parsed = JSON.parse(tc.function?.arguments || '{}');
+        if (Array.isArray(parsed?.tasks)) tasks = parsed.tasks;
+      } catch {}
+      if (tasks.length) updateTaskPlanCard(card, tasks);
+    } else if (isSubagentTool(name)) {
+      attachSubagentToPlanCard(card, tc);
+    }
+  } else {
+    bubble.append(toolChip(tc));
+  }
+}
+
+function buildTaskPlanWidget(o) {
+  const dummy = el('div');
+  return getOrCreateTaskRoadmapCard(dummy, []);
+}
+
+function buildSubagentWidget(o) {
+  const dummy = el('div');
+  return getOrCreateTaskRoadmapCard(dummy, []);
+}
+
 function formatCleanAnswer(text) {
   if (!text) return '';
   if (typeof text !== 'string') text = JSON.stringify(text);
@@ -1607,6 +2024,7 @@ function applyChatQuestionState(widget, o) {
 
 function buildToolChip(o) {
   if (isQuestionTool(o.name)) return buildChatQuestionWidget(o);
+  if (isSubagentTool(o.name) || isPlanTool(o.name)) return el('span', { class: 'hidden' });
   const status = el('span', { class: 'tool-status' });
   const cancel = el('button', {
     class: 'tool-cancel',
@@ -1632,6 +2050,7 @@ function buildToolChip(o) {
 function applyToolState(chip, o) {
   if (!chip) return;
   if (chip.classList.contains('chat-question-card')) { applyChatQuestionState(chip, o); return; }
+  if (chip.classList.contains('subagent-card')) { applySubagentState(chip, o); return; }
   const status = chip.querySelector('.tool-status');
   const cancel = chip.querySelector('.tool-cancel');
   const out = chip.querySelector('.tool-out');
@@ -2293,7 +2712,18 @@ async function refreshRunning() {
 let run = null;
 
 async function sendMessage(regenerate = false) {
-  if (state.streaming) return;
+  if (state.streaming) {
+    const inp = $('#input');
+    const txt = inp.value.trim();
+    if (txt) {
+      state.messageQueue.push({ id: 'q_' + Date.now(), content: txt, createdAt: Date.now() });
+      inp.value = '';
+      autoresize();
+      renderMessageQueue();
+      toast('Message added to queue');
+    }
+    return;
+  }
   if (!state.currentId) await newConversation();
   const input = $('#input');
   let content = input.value.trim();
@@ -2580,10 +3010,8 @@ function handleRunEvent(r, event, d) {
     bubble.append(chip);
     scrollToBottomIfFollowing();
   } else if (event === 'tool_generating') {
-    // Interactive questions must not show any placeholder or buttons while generating
-    if (isQuestionTool(d.name)) {
-      const existing = findChip(bubble, d.id);
-      if (existing) existing.remove();
+    // Interactive questions, task plan and subagents must not show a standalone chip while generating
+    if (isQuestionTool(d.name) || isPlanTool(d.name) || isSubagentTool(d.name)) {
       return;
     }
     if (!d.name) return;
@@ -2602,7 +3030,29 @@ function handleRunEvent(r, event, d) {
   } else if (event === 'tool_call') {
     sealThinking(r);
     sealText(r);
-    // Reuse the chip from 'tool_generating' if we have one; it's the same call.
+    if (isPlanTool(d.name) || isSubagentTool(d.name)) {
+      const card = getOrCreateTaskRoadmapCard(bubble);
+      if (isPlanTool(d.name)) {
+        let tasks = [];
+        try {
+          const rawArgs = d.arguments;
+          const parsed = typeof rawArgs === 'string' ? JSON.parse(rawArgs) : rawArgs;
+          if (Array.isArray(parsed?.tasks)) tasks = parsed.tasks;
+        } catch {}
+        if (tasks.length) updateTaskPlanCard(card, tasks);
+      } else if (isSubagentTool(d.name)) {
+        setStepSubagentStart(card, {
+          call_id: d.id,
+          title: d.arguments?.title || 'Sub-agent task',
+          task: d.arguments?.task || '',
+          workspace: d.arguments?.workspace || '',
+          tools: d.arguments?.tools || []
+        });
+      }
+      scrollToBottomIfFollowing();
+      return;
+    }
+
     const argsText = JSON.stringify(d.arguments ?? {}, null, 2);
     let chip = findChip(bubble, d.id);
     if (chip) {
@@ -2610,16 +3060,16 @@ function handleRunEvent(r, event, d) {
         updateChatQuestionWidget(chip, d);
         applyChatQuestionState(chip, { status: 'running' });
       } else {
-      const nameEl = chip.querySelector('.tool-name');
-      if (nameEl && d.name) nameEl.textContent = d.name;
-      let argsBlock = chip.querySelector('.tool-args');
-      if (!argsBlock) {
-        argsBlock = el('div', { class: 'tool-args' }, el('pre', {}));
-        chip.insertBefore(argsBlock, chip.querySelector('.tool-out'));
-      }
-      const pre = argsBlock.querySelector('pre');
-      if (pre && pre.textContent !== argsText) pre.textContent = argsText;
-      applyToolState(chip, { status: 'running' });
+        const nameEl = chip.querySelector('.tool-name');
+        if (nameEl && d.name) nameEl.textContent = d.name;
+        let argsBlock = chip.querySelector('.tool-args');
+        if (!argsBlock) {
+          argsBlock = el('div', { class: 'tool-args' }, el('pre', {}));
+          chip.insertBefore(argsBlock, chip.querySelector('.tool-out'));
+        }
+        const pre = argsBlock.querySelector('pre');
+        if (pre && pre.textContent !== argsText) pre.textContent = argsText;
+        applyToolState(chip, { status: 'running' });
       }
     } else {
       chip = buildToolChip({
@@ -2635,6 +3085,18 @@ function handleRunEvent(r, event, d) {
     const chip = findChip(bubble, d.id);
     if (chip) applyToolState(chip, { status: 'denied' });
   } else if (event === 'tool_cancelled') {
+    const card = bubble.querySelector('.task-roadmap-card');
+    if (card) {
+      const step = card.querySelector(`.trc-step-item[data-call-id="${d.id}"]`);
+      if (step) {
+        setStepSubagentDone(card, {
+          call_id: d.id,
+          duration_ms: d.duration_ms,
+          cancelled: true,
+          summary: 'Sub-agent task was cancelled by user.'
+        });
+      }
+    }
     const chip = findChip(bubble, d.id);
     if (chip) applyToolState(chip, { status: 'cancelled', durationMs: d.duration_ms });
   } else if (event === 'tool_result') {
@@ -2645,7 +3107,64 @@ function handleRunEvent(r, event, d) {
         durationMs: d.duration_ms,
         resultText: typeof d.result === 'string' ? d.result : JSON.stringify(d.result, null, 2)
       });
+    } else {
+      const card = bubble.querySelector('.task-roadmap-card');
+      if (card) {
+        const step = card.querySelector(`.trc-step-item[data-call-id="${d.id}"]`);
+        if (step && !step.classList.contains('is-done') && !step.classList.contains('is-cancelled')) {
+          let summary = typeof d.result === 'string' ? d.result : JSON.stringify(d.result, null, 2);
+          let filesModified = [];
+          const filesMatch = /\*\*Files Edited\*\*:\s*([^\n\r]+)/i.exec(summary);
+          if (filesMatch && filesMatch[1] && !filesMatch[1].toLowerCase().includes('none')) {
+            filesModified = filesMatch[1].split(',').map((s) => s.replace(/[`*]/g, '').trim()).filter(Boolean);
+          }
+          const summaryMatch = /\*\*Summary of Work Done\*\*:\s*([\s\S]*)$/i.exec(summary);
+          if (summaryMatch && summaryMatch[1]) {
+            summary = summaryMatch[1].trim();
+          }
+          setStepSubagentDone(card, {
+            call_id: d.id,
+            summary,
+            files_modified: filesModified,
+            duration_ms: d.duration_ms,
+            cancelled: d.cancelled
+          });
+        }
+      }
     }
+  } else if (event === 'task_plan') {
+    const card = getOrCreateTaskRoadmapCard(bubble, d.tasks);
+    updateTaskPlanCard(card, d.tasks);
+    scrollToBottomIfFollowing();
+  } else if (event === 'subagent_start') {
+    const card = getOrCreateTaskRoadmapCard(bubble);
+    setStepSubagentStart(card, d);
+    scrollToBottomIfFollowing();
+  } else if (event === 'subagent_thought') {
+    const card = getOrCreateTaskRoadmapCard(bubble);
+    if (card) appendSubagentThought(card, d.call_id, d.text);
+  } else if (event === 'subagent_tool_call') {
+    const card = getOrCreateTaskRoadmapCard(bubble);
+    if (card) appendSubagentToolCall(card, d.call_id, d);
+  } else if (event === 'subagent_tool_result') {
+    const card = getOrCreateTaskRoadmapCard(bubble);
+    if (card) updateSubagentToolResult(card, d.call_id, d);
+  } else if (event === 'subagent_done') {
+    const card = getOrCreateTaskRoadmapCard(bubble);
+    if (card) setStepSubagentDone(card, d);
+    scrollToBottomIfFollowing();
+  } else if (event === 'steer_applied') {
+    const pill = el('div', { class: 'steer-notice-pill' },
+      el('span', {}, '🎯'),
+      el('strong', {}, 'Steered ' + (d.target === 'subagent' ? 'sub-agent' : 'agent') + ':'),
+      el('span', {}, '"' + d.content + '"')
+    );
+    bubble.append(pill);
+    scrollToBottomIfFollowing();
+  } else if (event === 'task_started' || event === 'task_finished' || event === 'task_killed') {
+    updateTasksBadge();
+    const dlg = $('#dlg-tasks');
+    if (dlg && dlg.open) loadBackgroundTasks();
   } else if (event === 'question_prompt') {
     openQuestionDialog(d);
   } else if (event === 'question_resolved') {
@@ -2679,7 +3198,7 @@ function handleRunEvent(r, event, d) {
 }
 
 function findChip(bubble, id) {
-  return [...bubble.querySelectorAll('.tool-chip, .chat-question-card')].reverse().find((c) => c.dataset.callId === id);
+  return [...bubble.querySelectorAll('.tool-chip, .chat-question-card, .trc-step-item')].reverse().find((c) => c.dataset.callId === id);
 }
 
 async function finishRun(r, d) {
@@ -2761,8 +3280,18 @@ function setStreaming(on) {
   state.streaming = on;
   $('#btn-send').classList.toggle('hidden', on);
   $('#btn-stop').classList.toggle('hidden', !on);
-  $('#input').disabled = false; // input stays usable; you can queue a new chat meanwhile
+  $('#input').disabled = false;
   updateAppBusy();
+  if (!on && state.messageQueue.length) {
+    setTimeout(() => {
+      if (!state.streaming && state.messageQueue.length) {
+        const next = state.messageQueue.shift();
+        renderMessageQueue();
+        $('#input').value = next.content;
+        sendMessage();
+      }
+    }, 250);
+  }
 }
 
 // The header spinner reflects ANY in-flight generation, not just the chat on
@@ -4287,6 +4816,12 @@ function wire() {
   $('#sidebar-backdrop').onclick = () => toggleSidebar(false);
   $('#btn-export-chat').onclick = () => exportConversation('md');
   $('#btn-header-files').onclick = () => openFileManager();
+  const tasksBtn = $('#btn-header-tasks');
+  if (tasksBtn) tasksBtn.onclick = () => { openModal('#dlg-tasks'); loadBackgroundTasks(); };
+  $('#btn-filter-active-tasks')?.addEventListener('click', () => loadBackgroundTasks('active'));
+  $('#btn-filter-all-tasks')?.addEventListener('click', () => loadBackgroundTasks('all'));
+  $('#btn-refresh-tasks')?.addEventListener('click', () => loadBackgroundTasks());
+  updateTasksBadge();
   $('#btn-theme').onclick = () => { hideUserMenu(); cycleTheme(); };
 
   // Command palette: filter as you type, arrows move, Enter runs, Esc closes.
@@ -4697,3 +5232,190 @@ async function init() {
 }
 
 window.addEventListener('DOMContentLoaded', init);
+
+
+/* ───────────────────────── Message Queue & Steering ───────────────────────── */
+function renderMessageQueue() {
+  const container = $('#message-queue');
+  if (!container) return;
+  const countEl = $('#mq-count');
+  const listEl = $('#mq-list');
+  const queue = state.messageQueue || [];
+
+  container.classList.toggle('hidden', !queue.length);
+  if (countEl) countEl.textContent = String(queue.length);
+  if (!listEl) return;
+  listEl.innerHTML = '';
+
+  queue.forEach((item, idx) => {
+    const itemEl = el('div', { class: 'mq-item', 'data-id': item.id });
+
+    if (item.editing) {
+      const ta = el('textarea', { class: 'mq-edit-textarea', rows: 2 }, item.content);
+      const saveBtn = el('button', {
+        class: 'btn btn-primary sm',
+        type: 'button',
+        onclick: () => {
+          item.content = ta.value.trim();
+          item.editing = false;
+          renderMessageQueue();
+        }
+      }, 'Save');
+      const cancelBtn = el('button', {
+        class: 'btn sm ghost',
+        type: 'button',
+        onclick: () => {
+          item.editing = false;
+          renderMessageQueue();
+        }
+      }, 'Cancel');
+      const box = el('div', { class: 'mq-edit-box' }, ta, el('div', { class: 'row', style: 'gap:6px;' }, saveBtn, cancelBtn));
+      itemEl.append(box);
+    } else {
+      const textEl = el('div', { class: 'mq-text' }, (idx + 1) + '. ' + item.content);
+      const steerBtn = el('button', {
+        class: 'btn-mq-steer',
+        type: 'button',
+        title: 'Immediately send this message to steer the running agent/subagent',
+        onclick: () => steerFromQueue(item.id)
+      }, 'Steer 🚀');
+
+      const editBtn = el('button', {
+        class: 'btn-mq-edit',
+        type: 'button',
+        title: 'Edit queued message',
+        onclick: () => {
+          item.editing = true;
+          renderMessageQueue();
+        }
+      }, '✏️');
+
+      const removeBtn = el('button', {
+        class: 'btn-mq-remove',
+        type: 'button',
+        title: 'Remove from queue',
+        onclick: () => {
+          state.messageQueue = state.messageQueue.filter((x) => x.id !== item.id);
+          renderMessageQueue();
+        }
+      }, '✕');
+
+      const actions = el('div', { class: 'mq-actions' }, steerBtn, editBtn, removeBtn);
+      itemEl.append(textEl, actions);
+    }
+
+    listEl.append(itemEl);
+  });
+}
+
+async function steerFromQueue(id) {
+  const item = (state.messageQueue || []).find((x) => x.id === id);
+  if (!item || !state.currentId) return;
+  try {
+    await api('/chat/steer', {
+      method: 'POST',
+      body: { conversation_id: state.currentId, content: item.content }
+    });
+    toast('🎯 Steering directive sent to agent');
+    state.messageQueue = state.messageQueue.filter((x) => x.id !== id);
+    renderMessageQueue();
+  } catch (e) {
+    toast('Could not steer: ' + e.message, true);
+  }
+}
+
+/* ───────────────────────── Background Tasks Panel ───────────────────────── */
+let activeTasksFilter = 'active';
+
+async function updateTasksBadge() {
+  const badge = $('#tasks-badge');
+  if (!badge) return;
+  try {
+    const res = await api('/tasks?conversation_id=' + (state.currentId || ''));
+    const count = res.running_count || 0;
+    badge.textContent = String(count);
+    badge.classList.toggle('hidden', count === 0);
+  } catch {}
+}
+
+async function loadBackgroundTasks(filter = activeTasksFilter) {
+  activeTasksFilter = filter;
+  const listEl = $('#tasks-list');
+  const countEl = $('#tasks-dlg-count');
+  const btnActive = $('#btn-filter-active-tasks');
+  const btnAll = $('#btn-filter-all-tasks');
+
+  if (btnActive && btnAll) {
+    btnActive.classList.toggle('active', filter === 'active');
+    btnAll.classList.toggle('active', filter === 'all');
+  }
+
+  try {
+    const res = await api('/tasks?all=' + (filter === 'all' ? 1 : 0));
+    const tasks = res.tasks || [];
+    if (countEl) countEl.textContent = String(res.running_count || 0);
+    updateTasksBadge();
+
+    if (!listEl) return;
+    listEl.innerHTML = '';
+
+    const displayed = filter === 'active' ? tasks.filter((t) => t.status === 'running') : tasks;
+    if (!displayed.length) {
+      listEl.append(el('div', { class: 'muted', style: 'padding:20px;text-align:center;' },
+        filter === 'active' ? 'No active background tasks running.' : 'No background tasks found.'
+      ));
+      return;
+    }
+
+    displayed.forEach((t) => {
+      const dur = Math.round(t.durationMs / 1000);
+      const isRunning = t.status === 'running';
+
+      const statusPill = el('span', { class: 'task-status-pill ' + t.status },
+        isRunning ? '🟢 Running (' + dur + 's)' : t.status === 'completed' ? '✅ Completed (' + dur + 's)' : '🛑 ' + t.status + ' (' + dur + 's)'
+      );
+
+      const killBtn = isRunning ? el('button', {
+        class: 'btn-kill-task',
+        type: 'button',
+        onclick: async () => {
+          killBtn.disabled = true;
+          killBtn.textContent = 'Killing…';
+          try {
+            await api('/tasks/' + t.id + '/kill', { method: 'POST' });
+            toast('Task ' + t.id + ' stopped');
+            loadBackgroundTasks();
+          } catch (e) {
+            toast(e.message, true);
+            killBtn.disabled = false;
+            killBtn.textContent = '🛑 Kill';
+          }
+        }
+      }, '🛑 Kill') : null;
+
+      const cardHead = el('div', { class: 'task-card-head' },
+        el('div', { style: 'display:flex;align-items:center;gap:8px;' },
+          el('span', { class: 'task-card-name' }, t.name || t.id),
+          statusPill
+        ),
+        killBtn
+      );
+
+      const cmdBlock = el('div', { class: 'task-cmd-block' }, '$ ' + t.command);
+      const metaRow = el('div', { class: 'task-meta-row' },
+        el('span', {}, 'ID: ' + t.id + ' · CWD: ' + t.cwd),
+        t.exitCode != null ? el('span', {}, 'Exit code: ' + t.exitCode) : null
+      );
+
+      const outDrawer = el('details', { class: 'task-output-details' },
+        el('summary', {}, 'View captured logs'),
+        el('pre', { class: 'task-output-pre' }, t.outputTail || '(no output captured)')
+      );
+
+      const card = el('div', { class: 'task-card' }, cardHead, cmdBlock, metaRow, outDrawer);
+      listEl.append(card);
+    });
+  } catch (e) {
+    if (listEl) listEl.innerHTML = '<div class="muted error">' + escapeHtml(e.message) + '</div>';
+  }
+}

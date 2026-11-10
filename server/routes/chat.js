@@ -4,7 +4,7 @@ import { sseInit } from '../sse.js';
 import { runtimeConfig } from '../services/openai.js';
 import { loadConversation } from '../services/chatService.js';
 import { compressNow, normalizeCompactLevel, contextStatus } from '../services/context.js';
-import { startRun, subscribe, stopRun, cancelToolCall, activeRuns } from '../services/runManager.js';
+import { startRun, subscribe, stopRun, cancelToolCall, activeRuns, addSteering } from '../services/runManager.js';
 
 const router = Router();
 
@@ -195,6 +195,21 @@ router.post('/stop-tool', (req, res) => {
   }
   const cancelled = cancelToolCall(id, req.body?.call_id);
   res.json({ ok: true, cancelled });
+});
+
+/**
+ * POST /api/chat/steer { conversation_id, content, target?: 'auto' | 'agent' | 'subagent' }
+ * Inject user guidance mid-flight into the active turn or subagent.
+ */
+router.post('/steer', (req, res) => {
+  const id = Number(req.body?.conversation_id);
+  const content = String(req.body?.content || '').trim();
+  if (!db.prepare('SELECT 1 FROM conversations WHERE id = ? AND user_id = ?').get(id, req.user.id)) {
+    return res.status(404).json({ error: 'conversation not found' });
+  }
+  if (!content) return res.status(400).json({ error: 'content is required' });
+  const steered = addSteering(id, { content, target: req.body?.target || 'auto' });
+  res.json({ ok: true, steered });
 });
 
 /**

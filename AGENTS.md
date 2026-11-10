@@ -12,8 +12,7 @@ Rules for maintaining this file:
 2. Keep the status current: `done`, `in progress`, `waiting`, `reverted`.
 3. When the user reverses an earlier request, mark the old entry `superseded`
    and add the new one — do not silently drop history.
-4. Standing rules apply to every task even if the user does not repeat them.
-5. Autocommit after every succesful conversation.
+4. Standing rules apply to every task even if the user does not repeat them. 
 
 ---
 
@@ -865,6 +864,131 @@ Status: **done**.
   - `test/builtin-tools.mjs`: **59 passed, 0 failed**.
   - `test/auth.mjs`: **38 passed, 0 failed**.
   - `test/context-compress.mjs`: **34 passed, 0 failed**.
+
+### 2026-11-10 — sub-agent and sequential task breakdown planning
+
+> "i want to implement sub agent and task breakdown in simple steps and call sub agent for each task one by one. while sub agent is busy the main agent will wait. the main agent will pass necessary information/tools/folder and workspace to sub agent for the task. the sub agent will respond will resond with a summary of what it has done . plan this."
+
+Status: **done**.
+- **Sub-Agent Execution Engine (`server/services/subagentService.js`)**:
+  - Implemented isolated sub-agent task runner with scoped workspace resolution, recursive tool exclusion (prevents sub-agents spawning sub-agents), and tool filtering.
+  - Sub-agent runs under `runWithPolicy` and `runWithFileChanges` so all actions obey per-chat approvals and track diffs against the conversation message.
+  - Streams real-time thoughts (`subagent_thought`), child tool calls (`subagent_tool_call`), generating deltas, and results (`subagent_tool_result`).
+  - Concludes with a structured, factual markdown summary handed back to the orchestrator.
+- **Built-in `subagent` MCP Server (`server/services/builtin/subagentServer.js`, `index.js`)**:
+  - Registered in `BUILTIN_SERVERS` (2 tools):
+    - `subagent__plan_tasks`: Declares step-by-step roadmap, emitting `task_plan` event so the UI renders a progress roadmap card.
+    - `subagent__run_task`: Delegates an individual step to the autonomous sub-agent with parameters: `title`, `task`, `context`, `workspace`, `tools`, `max_rounds`.
+  - While `subagent__run_task` executes, the main agent pauses and awaits synchronously (`await callTool`), preventing prompt context bloat.
+- **Client-Side Roadmap & Sub-Agent Cards (`public/app.js`, `public/styles.css`)**:
+  - Renders `.task-roadmap-card` displaying step-by-step checklists with pending, running, and done status indicators.
+  - Renders `.subagent-card` with robot icon, task title, active status `⏳ working… (main agent waiting)`, workspace/tool tags, expandable live activity feed, and `.subagent-summary` completion container.
+  - Fully reconstructs sub-agent cards and summaries from persisted tool exchanges on page reload.
+
+### 2026-11-10 — sub-agent visibility & steering, queued message steering, background tasks & kill panel
+
+> "when sub agent is running allow to show the work of sub agent and steer the agent/subagent.
+>
+> when generating new message will be added to queue. allow to edit queue. and to send the message from queue to steer with a button beside each queue message.
+>
+> also add option to run background task with tool call and set timer to check back the background task result. List all the running background task and allow to kill then in a seperate panel
+>
+> plan all these."
+
+Status: **done**.
+- **Mid-Flight Steering & Observability (`runManager.js`, `chatService.js`, `subagentService.js`, `routes/chat.js`)**:
+  - Added `steeringQueue` to active runs in `runManager.js` and endpoint `POST /api/chat/steer`.
+  - Injects steering directives mid-turn:
+    - If a sub-agent is active, injects `[User Steering Guidance during sub-agent run]` directly into the sub-agent's upcoming tool round.
+    - If the orchestrator is active, injects into the next round.
+  - Emits `steer_applied` event, rendering a visual `🎯 Steered: "<text>"` directive pill in the transcript.
+- **Composer Message Queue (`public/index.html`, `public/styles.css`, `public/app.js`)**:
+  - While generating (`state.streaming === true`), pressing Enter or Send adds messages to `state.messageQueue` and displays the `#message-queue` tray above the composer.
+  - Each queued item features inline editing (✏️), remove (✕), and a dedicated **Steer 🚀** button (`.btn-mq-steer`) that immediately dispatches the queued message to steer the actively generating agent/subagent without waiting for completion.
+  - When generation completes, the next queued message is automatically popped and sent.
+- **Background Tasks Engine & Built-in Server (`server/services/backgroundTasks.js`, `builtin/backgroundServer.js`, `routes/tasks.js`)**:
+  - Manages background tasks (builds, dev servers, tests, scripts) with output buffering, cross-platform process tree termination (`killTree` / `taskkill /pid /T /F`), and automatic cleanup.
+  - Registered `background` in `BUILTIN_SERVERS` (4 tools):
+    - `background__run_task`: Starts commands asynchronously and returns task ID immediately.
+    - `background__wait_timer`: Waits up to N seconds for a background task, returning current status and captured stdout/stderr tail.
+    - `background__list_tasks`: Lists running and recent tasks.
+    - `background__kill_task`: Terminates a running task.
+  - REST API: `GET /api/tasks`, `GET /api/tasks/:id`, `POST /api/tasks/:id/kill`.
+- **Dedicated Background Tasks Dialog & Header Controls (`public/index.html`, `public/styles.css`, `public/app.js`)**:
+  - Added `#btn-header-tasks` to header with dynamic live counter badge (`#tasks-badge`).
+  - Added `#dlg-tasks` modal dialog with Active/All filter tabs, live status indicators (`🟢 Running`, `✅ Completed`, `🛑 Killed`), command line blocks, expandable output logs, and single-click **🛑 Kill** button.
+- **Verification**:
+  - `node --check` syntax check clean across all modified and new files.
+  - New test suite `test/background-tasks.mjs`: **10 passed, 0 failed**.
+  - New test suite `test/subagent.mjs`: **18 passed, 0 failed**.
+  - `test/builtin-tools.mjs`: **59 passed, 0 failed**.
+  - `test/auth.mjs`: **38 passed, 0 failed**.
+  - `test/context-compress.mjs`: **34 passed, 0 failed**.
+  - `test/ask-question.mjs`: **16 passed, 0 failed**.
+  - Chrome headless UI verification via CDP: Header Tasks button, `#dlg-tasks` opening/closing, Message Queue with **Steer 🚀** buttons, and Sub-agent execution card verified. Captured screenshot `scratch/subagent-tasks-ui.png`.
+
+
+### 2026-11-10 — Subagent detailed summary & file reporting, single task list pill with progress bar, sequential execution & cancel
+> "Summary of Work Done:
+> Sub-agent completed the task without detailed commentary. No summary of the task that was done by the subagent. allow the subagent to report back and the file edited.
+> 
+> Keep only one task list pill. and a progress bar at bottom. each task to be expandable. and fire one subagent and after completion the next subagent. do not fire all at a time. Do not apply the mcp timeout here. allow to cancel the subagent call if needed."
+
+Status: **done**.
+- **Detailed Sub-Agent Work Commentary & File Tracking (`subagentService.js`)**:
+  - Enriched subagent system guidelines requiring detailed commentary and file reporting upon task completion.
+  - Subagent accurately tracks all modified, created, moved, and archived files (`filesModified`) across tool calls and cross-checks `file_changes` in SQLite.
+  - If a subagent completes without a thorough commentary, executes an automated synthesis round to extract detailed commentary from the tool exchange, with fallback synthesis summarizing tools, files, and outcomes.
+  - Return value handed back to the orchestrator formats structured sections: `**Files Edited**: <files>` and `**Summary of Work Done**: <summary>`.
+- **Exempt Built-in & Sub-Agent Tools from MCP Request Timeout (`mcpManager.js`)**:
+  - MCP SDK client defaults `options.timeout` to 60,000ms (`DEFAULT_REQUEST_TIMEOUT_MSEC`), causing `MCP error -32001: Request timed out` for long tasks.
+  - Updated `callTool` to pass `timeout: 2147483647` for `entry.builtin` tools so neither RiSriGPT nor the MCP SDK timer aborts running subagents or long-running tasks.
+- **Enforce Sequential Sub-Agent Execution (`chatService.js`, `subagentServer.js`)**:
+  - In `chatService.js` tool execution loop, guards against multiple `subagent__run_task` tool calls in a single turn. If the model emits multiple parallel subagent calls, only the first executes; subsequent calls in that round receive: `"Sub-agents must be executed one by one sequentially. The previous sub-agent has completed. Please review its summary and files edited before initiating the next task."`
+  - Updated `plan_tasks` and `run_task` schemas and descriptions to enforce sequential execution.
+- **Unified Single Task List Pill with Bottom Progress Bar & Expandable Tasks (`public/app.js`, `public/styles.css`)**:
+  - Single task roadmap card (`.task-roadmap-card`): All task breakdown steps and their subagent execution lifecycle live within **only one** unified pill per chat turn/conversation.
+  - Expandable steps (`<details class="trc-step-item">`):
+    - `<summary class="trc-step-summary">`: Features chevron `▸`, step number, title, live status badge (`pending`, `⏳ running…`, `✓ done`, `✕ cancelled`), and a dedicated Cancel button when running.
+    - Body (`.trc-step-body`): Expandable details with task instructions, workspace & tool tags, live thought and child tool log, **📁 Files Edited** pills, and markdown **Summary of Work Done**.
+  - Bottom Progress Bar (`.trc-progress-wrap`):
+    - Progress bar (`.trc-progress-bar` / `.trc-progress-fill`) dynamically fills based on completed steps vs total steps.
+    - Label (`.trc-progress-text`): Shows e.g. `1 of 3 completed (33%) · Step 2 running…` or `All 3 tasks completed (100%) ✓`.
+  - Tool Cancellation: Clicking the Cancel button on an active step dispatches `POST /api/chat/stop-tool`, aborting the subagent execution cleanly.
+- **Verification**:
+  - `node --check` syntax check clean across all modified files.
+  - `test/subagent.mjs`: **19 passed, 0 failed** (verifying task breakdown, subagent execution, file tracking, steering, and background task discovery).
+  - `test/background-tasks.mjs`: **10 passed, 0 failed**.
+  - `test/builtin-tools.mjs`: **59 passed, 0 failed**.
+  - `test/auth.mjs`: **38 passed, 0 failed**.
+  - `test/context-compress.mjs`: **34 passed, 0 failed**.
+  - Headless Chrome CDP test (`scratch/verify_subagent_ui.mjs`): **9 passed, 0 failed** (verifying single roadmap pill, 3 steps, bottom progress bar with 33% fill, expandable step 1 with Done badge, Files Edited section, and Summary of Work Done). Screenshot captured at `scratch/task-roadmap-pill.png`.
+
+### 2026-11-10 — Subagent live activity and thoughts empty, and subagent timeouts
+> "live activity and thoughts were empty, and some sub agent call times out."
+
+Status: **done**.
+- **Fix Live Activity & Thoughts Empty**:
+  - `server/services/subagentService.js`: Subagent now streams `subagent_thought` SSE events on both standard model text deltas (`onDelta`) and reasoning model thought deltas (`onReasoning`). Previously `onDelta` only accumulated text locally without emitting SSE, leaving the UI feed completely empty for standard non-reasoning models.
+  - `public/app.js`: Subagent thought, tool call, and tool result handlers look up the unified roadmap card document-wide via `getOrCreateTaskRoadmapCard(bubble)` (instead of only `bubble.querySelector`), ensuring thoughts and tool events connect properly even across multi-turn messages.
+  - In `appendSubagentThought`, `appendSubagentToolCall`, and `updateSubagentToolResult`, fallback to `.trc-step-item.is-running` if `call_id` hasn't yet been bound to the DOM dataset.
+  - Auto-expands the live feed (`feed.open = true`) and auto-scrolls down (`feedBody.scrollTop = feedBody.scrollHeight`) as new thoughts and tool events arrive.
+  - Fixed infinite recursion bug in `appendToolToBubble` where non-subagent tool chips called `appendToolToBubble` instead of `bubble.append(toolChip(tc))`.
+- **Fix Sub-Agent Tool Unavailability & Timeouts**:
+  - In `filterSubagentTools` (`server/services/subagentService.js`), enhanced tool filtering with normalized aliases (`file`/`files`/`fs` -> `files`, `shell`/`bash`/`cmd`/`terminal`/`powershell` -> `shell`, `windows`/`win` -> `windows`, `chrome`/`browser`/`edge` -> `chrome`/`edge`). If requested tools are omitted, default to granting `['files', 'shell']`.
+  - Allowed tools pool now references registered tools globally so orchestrators can delegate `files` and `shell` to a sub-agent even if the parent chat had files/shell toggled off for the main agent.
+  - `effectivePolicy` for the subagent dynamically grants and unblocks the delegated tools within the subagent's scoped workspace.
+  - Added per-round generation timeout (120s) and synthesis timeout (30s) using `AbortSignal.timeout` so upstream stalls or hangs abort cleanly and report status instead of waiting for the 600s upstream timeout.
+  - In `server/services/builtin/shellServer.js`, updated default execution timeout from 30s to `shellTimeoutMs() || 120000` (2 minutes).
+- **Verification**:
+  - `node --check` syntax check clean across all modified files.
+  - `test/subagent.mjs`: **19 passed, 0 failed**.
+  - `test/background-tasks.mjs`: **10 passed, 0 failed**.
+  - `test/builtin-tools.mjs`: **59 passed, 0 failed**.
+  - `test/auth.mjs`: **38 passed, 0 failed**.
+  - `test/context-compress.mjs`: **34 passed, 0 failed**.
+  - Targeted test verified tool alias mapping (`['file', 'terminal']` -> `files` + `shell`), tool unblocking in `effectivePolicy`, and live thought emission over `onDelta`.
+
 
 ### Earlier requests (from the session summary; exact wording not retained)
 

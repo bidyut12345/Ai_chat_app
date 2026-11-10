@@ -58,14 +58,15 @@ function disabledServers(raw) {
 export function normalizePolicy(row) {
   if (!row) return { ...BASE_POLICY, disabledServers: new Set() };
   const workdir = String(row.workdir || '').trim();
+  const rawDisabled = row.disabledServers instanceof Set ? row.disabledServers : disabledServers(row.mcp_disabled);
   return {
-    approval: row.approval_mode === 'auto' ? 'auto' : 'ask',
-    fileAccess: row.file_access === 'full' ? 'full' : 'restricted',
-    shellAccess: row.shell_access === 'full' ? 'full' : 'restricted',
+    approval: (row.approval === 'auto' || row.approval_mode === 'auto') ? 'auto' : 'ask',
+    fileAccess: (row.fileAccess === 'full' || row.file_access === 'full') ? 'full' : 'restricted',
+    shellAccess: (row.shellAccess === 'full' || row.shell_access === 'full') ? 'full' : 'restricted',
     workdir: path.resolve(workdir || DEFAULT_ROOT),
-    filesEnabled: bool(row.files_enabled),
-    shellEnabled: bool(row.shell_enabled),
-    disabledServers: disabledServers(row.mcp_disabled)
+    filesEnabled: bool(row.filesEnabled ?? row.files_enabled),
+    shellEnabled: bool(row.shellEnabled ?? row.shell_enabled),
+    disabledServers: rawDisabled
   };
 }
 

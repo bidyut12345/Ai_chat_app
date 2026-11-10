@@ -6,6 +6,7 @@
 import { db } from '../db.js';
 import fs from 'node:fs';
 import path from 'node:path';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { chatCompletion, consumeChatStream, mcpToolsToOpenAi, unavailableToolResult } from './openai.js';
 import { allTools, callTool } from './mcpManager.js';
 import { isPreApproved, requestApproval, denialResult } from './approvals.js';
@@ -471,21 +472,34 @@ export function buildMessages(conversationId, { systemPrompt, extraSystem, summa
   return msgs;
 }
 
+const turnContextStore = new AsyncLocalStorage();
+
+export function runWithTurnContext(ctx, fn) {
+  return turnContextStore.run(ctx, fn);
+}
+
+export function currentTurnContext() {
+  return turnContextStore.getStore() || null;
+}
+
 /**
  * Run one chat turn with the conversation's own tool policy active, so the
  * built-in file and shell tools resolve paths, approvals and scopes per chat.
  * The turn is also tied to the user message that started it, so every text file
  * the tools change is recorded against that message for diff + revert.
  */
-export function runChatTurn({ emit, signal, toolControl, conversation, cfg, useTools, extraSystem, aiTitle, turnMessageId }) {
-  return runWithConversation(conversation, () =>
-    runWithFileChanges({ conversationId: conversation.id, messageId: turnMessageId }, () =>
-      runChatTurnInner({ emit, signal, toolControl, conversation, cfg, useTools, extraSystem, aiTitle })
+export function runChatTurn({ emit, signal, toolControl, conversation, cfg, useTools, extraSystem, aiTitle, turnMessageId, runObj }) {
+  const turnCtx = { emit, signal, toolControl, conversation, cfg, useTools, turnMessageId, runObj, activeToolCallId: null, activeCallSignal: null };
+  return runWithTurnContext(turnCtx, () =>
+    runWithConversation(conversation, () =>
+      runWithFileChanges({ conversationId: conversation.id, messageId: turnMessageId }, () =>
+        runChatTurnInner({ emit, signal, toolControl, conversation, cfg, useTools, extraSystem, aiTitle, runObj, turnCtx })
+      )
     )
   );
 }
 
-async function runChatTurnInner({ emit, signal, toolControl, conversation, cfg, useTools, extraSystem, aiTitle }) {
+async function runChatTurnInner({ emit, signal, toolControl, conversation, cfg, useTools, extraSystem, aiTitle, runObj, turnCtx }) {
   // The upstream request is aborted when the user presses Stop (the run's
   // signal). A browser merely disconnecting does NOT abort — see runManager.
   const abortSignal = signal || new AbortController().signal;
@@ -568,6 +582,20 @@ async function runChatTurnInner({ emit, signal, toolControl, conversation, cfg, 
     const roundStartMs = Date.now() - 1000;
     roundText = '';
     roundThink = '';
+
+    // Check if any steering directives arrived for the orchestrator
+    if (runObj && Array.isArray(runObj.steeringQueue) && runObj.steeringQueue.length) {
+      const steers = [...runObj.steeringQueue];
+      runObj.steeringQueue.length = 0;
+      for (const s of steers) {
+        const steerText = s.content || s;
+        messages.push({
+          role: 'user',
+          content: `[User Steering Guidance during generation]: ${steerText}`
+        });
+        emit('steer_applied', { target: 'agent', content: steerText });
+      }
+    }
     // Within a single tool-heavy turn the live `messages` array keeps growing
     // (each round appends tool calls + up to 8k-char results). Trim bulky older
     // tool results so we never re-send the whole turn's tool traffic — while
@@ -699,6 +727,7 @@ async function runChatTurnInner({ emit, signal, toolControl, conversation, cfg, 
     const toolCallRow = insertAssistant(conversation.id, assistant.content || '', JSON.stringify(assistant.tool_calls), roundReasoning, JSON.stringify(roundSegs), null);
     messages.push({ role: 'assistant', content: assistant.content || '', tool_calls: assistant.tool_calls });
 
+    let firedSubagent = false;
     for (const tc of assistant.tool_calls) {
       const name = tc.function.name;
       let args = {};
@@ -723,10 +752,18 @@ async function runChatTurnInner({ emit, signal, toolControl, conversation, cfg, 
       // Give this specific call its own abort signal so the user can cancel
       // just this tool (the model is then told it was cancelled and continues).
       const callSignal = toolControl?.begin ? toolControl.begin(tc.id) : null;
+      if (turnCtx) {
+        turnCtx.activeToolCallId = tc.id;
+        turnCtx.activeCallSignal = callSignal;
+      }
       try {
         if (parseErr) resultText = `Tool error: invalid JSON arguments (${parseErr.message})`;
+        else if (name === 'subagent__run_task' && firedSubagent) {
+          resultText = 'Sub-agents must be executed one by one sequentially. The previous sub-agent has completed. Please review its summary and files edited before initiating the next task.';
+        }
         else if (!toolIndex.has(name)) resultText = unavailableToolResult(name);
         else {
+          if (name === 'subagent__run_task') firedSubagent = true;
           const tool = toolIndex.get(name);
           const isQuestion = tool?.isInteractiveQuestion || name === 'ask_question' || name === 'AskUserQuestion' || name === 'ask_user_question';
           if (isQuestion) {

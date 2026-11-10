@@ -78,6 +78,7 @@
         </div>
         <button type="button" id="btn-ai-title" class="ai-title-btn" title="Generate a title with AI"><span class="hb-ico">✨</span><span class="hb-label">AI</span></button>
         <button type="button" id="btn-header-files" class="header-btn" title="View workspace files"><span class="hb-ico">📁</span><span class="hb-label">Files</span></button>
+        <button type="button" id="btn-header-tasks" class="header-btn" title="View running background tasks"><span class="hb-ico">⚡</span><span class="hb-label">Tasks</span><span id="tasks-badge" class="badge-count hidden">0</span></button>
         <button type="button" id="btn-export-chat" class="header-btn" title="Download this chat as Markdown"><span class="hb-ico">⤓</span><span class="hb-label">Export</span></button>
       </header>
 
@@ -195,6 +196,14 @@
               <button type="button" class="btn sm ghost" id="btn-image-cancel">Cancel</button>
             </div>
           </div>
+        </div>
+
+        <div id="message-queue" class="message-queue hidden">
+          <div class="mq-header">
+            <span class="mq-title">📥 Queued (<span id="mq-count">0</span>)</span>
+            <span class="mq-hint">Auto-sends when reply finishes · or click <strong>Steer 🚀</strong></span>
+          </div>
+          <div id="mq-list" class="mq-list"></div>
         </div>
 
         <form id="composer" class="composer">
@@ -582,6 +591,24 @@
         <button type="button" class="btn" id="btn-question-dlg-skip">Skip</button>
         <button type="button" class="btn btn-primary" id="btn-question-dlg-submit" disabled>Submit Answer</button>
       </div>
+    </form>
+  </dialog>
+
+  <!-- ───────── Background tasks dialog ───────── -->
+  <dialog id="dlg-tasks" class="modal tasks-modal">
+    <form method="dialog" id="tasks-form">
+      <header class="modal-head">
+        <h3><span class="t-ico">⚡</span> Background Tasks (<span id="tasks-dlg-count">0</span>)</h3>
+        <button type="button" class="icon-btn plain" id="btn-tasks-dlg-close" data-close>✕</button>
+      </header>
+      <div class="tasks-toolbar">
+        <div class="tasks-filter-group">
+          <button type="button" class="btn sm active" id="btn-filter-active-tasks">Active</button>
+          <button type="button" class="btn sm" id="btn-filter-all-tasks">All Tasks</button>
+        </div>
+        <button type="button" class="btn sm" id="btn-refresh-tasks">🔄 Refresh</button>
+      </div>
+      <div id="tasks-list" class="tasks-list modal-body"></div>
     </form>
   </dialog>
 

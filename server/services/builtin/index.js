@@ -1,4 +1,4 @@
-﻿/**
+/**
  * Registry of the built-in MCP servers that ship with the app.
  *
  * They are ordinary MCP servers living in this process, so they appear in the
@@ -11,6 +11,9 @@ import { fileTools } from './filesServer.js';
 import { shellTools, stopAllJobs } from './shellServer.js';
 import { windowsTools } from './windowsServer.js';
 import { browserTools } from './browserServer.js';
+import { subagentTools } from './subagentServer.js';
+import { backgroundTools } from './backgroundServer.js';
+import { backgroundTasks } from '../backgroundTasks.js';
 import { stopBrowsers } from './cdp.js';
 
 export const BUILTIN_SERVERS = {
@@ -43,6 +46,18 @@ export const BUILTIN_SERVERS = {
     version: '1.0.0',
     description: 'Drive Microsoft Edge with its own profile: open pages, read text, click, fill forms, run JS and take screenshots.',
     tools: browserTools('edge')
+  },
+  subagent: {
+    label: 'Built-in sub-agent delegation',
+    version: '1.0.0',
+    description: 'Delegate tasks to autonomous sub-agents with scoped tools and workspaces. The main agent waits and receives a summary upon completion.',
+    tools: subagentTools
+  },
+  background: {
+    label: 'Built-in background tasks',
+    version: '1.0.0',
+    description: 'Run background tasks with tool calls, set timers to check back results, list running tasks, and terminate them.',
+    tools: backgroundTools
   }
 };
 
@@ -61,5 +76,6 @@ export function createBuiltinTransport(key) {
 
 export function stopAllBuiltin() {
   stopAllJobs();
+  backgroundTasks.stopAllTasks();
   stopBrowsers();
 }

@@ -68,7 +68,8 @@ export const shellTools = [
       if (!command) throw new PolicyError('command is required');
       const cwd = resolveCwd(args.cwd);
       const requested = Number(args.timeout_seconds);
-      const timeout = Number.isFinite(requested) && requested > 0 ? Math.min(requested, 3600) * 1000 : 30000;
+      const defaultTimeout = shellTimeoutMs() || 120000;
+      const timeout = Number.isFinite(requested) && requested > 0 ? Math.min(requested, 3600) * 1000 : defaultTimeout;
       const maxBytes = Math.min(Math.max(Number(args.max_output_bytes) || OUTPUT_CAP, 1000), 5000000);
 
       const targetShell = args.interpreter || args.shell || 'auto';

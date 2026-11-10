@@ -86,6 +86,8 @@ export function startRun({ conversation, cfg, useTools, extraSystem, aiTitle, tu
     abort,
     finished: false,
     startedAt: Date.now(),
+    // Steering directives submitted while generating to guide agent or subagent
+    steeringQueue: [],
     // callId -> AbortController for tool calls currently executing, so the user
     // can cancel an individual tool call without stopping the whole turn.
     pendingTools: new Map()
@@ -105,7 +107,7 @@ export function startRun({ conversation, cfg, useTools, extraSystem, aiTitle, tu
     }
   };
 
-  runChatTurn({ emit: run.emit, signal: abort.signal, toolControl, conversation, cfg, useTools, extraSystem, aiTitle, turnMessageId })
+  runChatTurn({ emit: run.emit, signal: abort.signal, toolControl, conversation, cfg, useTools, extraSystem, aiTitle, turnMessageId, runObj: run })
     .catch((e) => {
       // runChatTurn emits its own 'done'; this only fires for setup errors that
       // happen before the loop, so the UI still learns the run ended badly.
@@ -216,3 +218,22 @@ export function subscribe(conversationId, lastEventId, res) {
   res.on('close', () => run.subscribers.delete(res));
   return true;
 }
+
+/**
+ * Queue a user steering directive for an actively generating run.
+ * Guides sub-agents or the main agent in-flight without aborting generation.
+ */
+export function addSteering(conversationId, { content, target = 'auto' }) {
+  const run = runs.get(Number(conversationId));
+  if (!run || run.finished) return false;
+  const steerItem = {
+    id: `st_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+    content: String(content || '').trim(),
+    target,
+    timestamp: Date.now()
+  };
+  run.steeringQueue.push(steerItem);
+  run.emit('steer_queued', steerItem);
+  return true;
+}
+
